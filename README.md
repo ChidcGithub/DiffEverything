@@ -301,6 +301,10 @@ cargo test --workspace
 # Strict lint
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+
+# Fast iteration vs. optimized shipping binary
+cargo build --release -p diff-cli
+cargo build --profile dist -p diff-cli
 ```
 
 The release was also validated with 189 end-to-end smoke tests and real external fixtures. Maintainer fixture, smoke-test and release scripts are kept local and are not part of the public repository.
@@ -348,7 +352,8 @@ elapsed  7 ms
 
 ## Performance, Size and Hardening
 
-- Release builds use `opt-level = 3`, fat LTO, one codegen unit and symbol stripping. This improves optimizer freedom and removes unused symbols; the release binary is rebuilt from the same source.
+- `cargo build --release` is the fast iteration profile: `opt-level = 3`, no LTO, 16 codegen units and symbol stripping. The shipping `dist` profile (`cargo build --profile dist -p diff-cli`) uses fat LTO and one codegen unit for the smallest/fastest binary. This keeps normal release builds and release tests practical while preserving an optimized artifact for publication.
+- `crates/diff-core/tests/integration.rs` is the single integration-test target; the six case modules are included from `tests/cases/` and no longer produce six separate link steps.
 - The embedded Windows aria2 executable is stored zstd-compressed in the binary (2.07 MiB instead of 5.65 MiB) and decompressed to the temporary directory on first use. Raw binary SHA-256 is recorded in `THIRD_PARTY_LICENSES.md`.
 - Directory and archive entry comparison shares one `Arc<GlobSet>` instead of cloning the matcher per entry, merges sorted key sets linearly, avoids a per-entry result-key clone, and skips progress-message formatting when progress is disabled.
 - Both crates use `#![forbid(unsafe_code)]`.

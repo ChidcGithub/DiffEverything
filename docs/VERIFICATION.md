@@ -64,17 +64,15 @@ Manual release verification on Windows also downloaded two HTTP files with the e
 
 ## Test Results
 
+Integration tests are consolidated under one `tests/integration.rs` target; the six case files are modules under `tests/cases/` and no longer produce six independent links. `cargo build --release` uses the fast profile (no LTO, 16 CGU); the shipping `dist` profile uses fat LTO and one CGU.
+
 ```text
 cargo test --workspace
 11 CLI binary unit tests
 73 CLI tests
 147 diff-core unit tests
-7 engine integration tests
-21 extended format integration tests
-58 format integration tests
-15 robustness tests
-3 folder merge integration tests
-2 folder patch integration tests
+106 diff-core integration tests (one linked target: engine 7, extended formats 21,
+    formats 58, robustness 15, folder merge 3, folder patch 2)
 = 337 tests, all passing
 ```
 
