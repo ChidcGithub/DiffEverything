@@ -204,7 +204,7 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 ## Parallelism, Progress and Security
 
 - Directory and archive entries are compared with rayon. Each worker gets a forked `Ctx` (summary, warnings, excludes); summaries and warnings are merged in path order after collection, so output is deterministic.
-- `--jobs 0` uses the rayon global pool, `--jobs 1` runs sequentially, and larger values build a bounded local thread pool.
+- `--jobs` defaults to 4; `--jobs 0` uses the rayon global pool, `--jobs 1` runs sequentially, and larger values build a bounded local thread pool.
 - `ProgressHandle` is a thread-safe stderr sink. It reports entry counts and accepts messages from the engine and Kaspersky scanner; `--progress` forces it, `--no-progress`/`--quiet` disable it.
 - Kaspersky integration auto-detects `avp.com` under common installation paths, checks the `AVP*` service state, and runs `SCAN ... /i0 /R:<temp-report>`. `/i0` is report-only: no disinfection or deletion. Threats abort with exit code `2`; a missing installation or stopped service is a warning. Reports are decoded from UTF-8/UTF-16 and parsed for detection lines.
 

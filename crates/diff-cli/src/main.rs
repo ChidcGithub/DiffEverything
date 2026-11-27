@@ -273,11 +273,11 @@ struct Cli {
     #[arg(help_heading = "Output", long, conflicts_with = "no_progress")]
     progress: bool,
 
-    /// Worker threads for directory/archive comparison (0 = all cores, 1 = sequential)
+    /// Worker threads for directory/archive comparison (default 4; 0 = all cores, 1 = sequential)
     #[arg(
         help_heading = "Performance",
         long,
-        default_value_t = 0,
+        default_value_t = 4,
         value_name = "N"
     )]
     jobs: usize,

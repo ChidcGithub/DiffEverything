@@ -174,7 +174,7 @@ Common examples:
 | `--no-color` | Disable ANSI colors |
 | `--progress` / `--no-progress` | Force/hide progress on stderr; auto when stderr is a terminal |
 | **Performance** | |
-| `--jobs <N>` | Worker threads for directory/archive entries; `0` = all cores, `1` = sequential |
+| `--jobs <N>` | Worker threads for directory/archive entries; default 4, `0` = all cores, `1` = sequential |
 | **Security** | |
 | `--security-scan` | Scan both inputs with installed Kaspersky before comparing |
 | `--kaspersky <FILE>` | Kaspersky `avp.com` path; auto-detected when omitted |
@@ -261,7 +261,7 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 
 ## Parallelism, Progress and Security
 
-- Directory and archive entries are compared in parallel with rayon. `--jobs 0` uses all cores, `--jobs 1` is sequential, and larger values cap workers. Results are collected in path order, so reports remain deterministic.
+- Directory and archive entries are compared in parallel with rayon. `--jobs` defaults to `4`, `--jobs 0` uses all cores, `--jobs 1` is sequential, and larger values cap workers. Results are collected in path order, so reports remain deterministic.
 - Progress is written to stderr, never to the report. It is enabled automatically when stderr is a terminal; `--progress` forces it and `--no-progress` (or `--quiet`) disables it.
 - `--security-scan` uses only Kaspersky's local `avp.com` interface. Common installation paths are auto-detected; `--kaspersky <FILE>` overrides detection. Scans use `/i0` (report only), so files are never disinfected or deleted. Detected threats abort with exit code `2`; a missing Kaspersky installation or stopped service produces a warning and the diff continues. `--scan-timeout` bounds each scan.
 

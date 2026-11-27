@@ -73,9 +73,13 @@ pub struct DiffOptions {
     #[serde(default)]
     pub decompile: Option<DecompileOptions>,
     /// Worker threads for directory/archive entry comparison. 0 uses the
-    /// rayon global pool; 1 disables parallelism.
-    #[serde(default)]
+    /// rayon global pool; 1 disables parallelism; default 4.
+    #[serde(default = "default_jobs")]
     pub jobs: usize,
+}
+
+fn default_jobs() -> usize {
+    4
 }
 
 impl Default for DiffOptions {
@@ -100,7 +104,7 @@ impl Default for DiffOptions {
             image_threshold: 0.0,
             ocr: None,
             decompile: None,
-            jobs: 0,
+            jobs: 4,
         }
     }
 }
