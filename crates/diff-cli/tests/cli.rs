@@ -1468,6 +1468,74 @@ fn progress_is_written_to_stderr_when_forced() {
 }
 
 #[test]
+fn help_is_grouped_and_includes_examples() {
+    let output = run_str(&["--help"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("Usage: diff-everything [OPTIONS] [LEFT] [RIGHT]"),
+        "{text}"
+    );
+    for heading in [
+        "Comparison:",
+        "Output & display:",
+        "Progress:",
+        "Limits:",
+        "Images:",
+        "PDF & OCR:",
+        "Merge & sync:",
+        "Patches:",
+        "Sessions & remote:",
+        "Performance:",
+        "Security:",
+        "Approvals & decompilation:",
+        "External tools:",
+    ] {
+        assert!(text.contains(heading), "missing {heading}\n{text}");
+    }
+    assert!(text.contains("Examples:"), "{text}");
+    assert!(text.contains("--style <STYLE>"), "{text}");
+    assert!(text.contains("--git-history"), "{text}");
+}
+
+#[test]
+fn rich_style_adds_banner_rules_and_line_numbers() {
+    let old = fixture("text/old.txt");
+    let new = fixture("text/new.txt");
+    let rich = run_str(&[
+        old.to_str().unwrap(),
+        new.to_str().unwrap(),
+        "--style",
+        "rich",
+        "--no-color",
+        "--detail",
+        "full",
+    ]);
+    assert_eq!(rich.status.code(), Some(1), "{}", stderr(&rich));
+    let text = stdout(&rich);
+    assert!(text.starts_with("DiffEverything "), "{text}");
+    assert!(text.contains("===="), "{text}");
+    assert!(text.contains("-- Changes "), "{text}");
+    assert!(text.contains("status   [DIFFERENT]"), "{text}");
+    assert!(text.contains(" | "), "{text}");
+    assert!(
+        text.lines().any(|line| line.contains(" | -")),
+        "line-number gutter missing: {text}"
+    );
+
+    let auto = run_str(&[
+        old.to_str().unwrap(),
+        new.to_str().unwrap(),
+        "--no-color",
+        "--detail",
+        "full",
+    ]);
+    let auto_text = stdout(&auto);
+    assert!(!auto_text.contains("===="), "{auto_text}");
+    assert!(auto_text.starts_with("DiffEverything "), "{auto_text}");
+}
+
+#[test]
 fn security_scan_blocks_detected_files_with_mock_kaspersky() {
     let dir = tempfile::tempdir().unwrap();
     let left = dir.path().join("left.com");

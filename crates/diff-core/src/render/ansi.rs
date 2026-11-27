@@ -10,9 +10,81 @@ const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
 const CYAN: &str = "\x1b[36m";
 const DIM: &str = "\x1b[2m";
+const BOLD_RED: &str = "\x1b[1;31m";
+const BOLD_GREEN: &str = "\x1b[1;32m";
+const BOLD_YELLOW: &str = "\x1b[1;33m";
+const BOLD_CYAN: &str = "\x1b[1;36m";
+const BOLD_WHITE: &str = "\x1b[1;37m";
+const BADGE_RED: &str = "\x1b[1;97;41m";
+const BADGE_GREEN: &str = "\x1b[1;97;42m";
+const BADGE_YELLOW: &str = "\x1b[1;30;43m";
+const RULE_WIDTH: usize = 72;
 
 pub fn render(report: &DiffReport, options: &RenderOptions) -> String {
     let mut out = String::new();
+    if options.rich {
+        render_rich_header(report, options, &mut out);
+    } else {
+        render_plain_header(report, options, &mut out);
+    }
+
+    if options.summary_only {
+        let entries = crate::render::changed_entries(&report.root);
+        if !entries.is_empty() {
+            let _ = writeln!(out);
+            if options.rich {
+                section_rule("Changed paths", options, &mut out);
+                for (marker, path) in entries {
+                    let marker = paint(
+                        &marker.to_string(),
+                        marker_color_char(marker),
+                        options.color,
+                    );
+                    if path == "<root>" {
+                        let _ = writeln!(
+                            out,
+                            "  {marker} {} -> {}",
+                            report.left.path, report.right.path
+                        );
+                    } else {
+                        let _ = writeln!(out, "  {marker} {path}");
+                    }
+                }
+            } else {
+                let _ = writeln!(out, "changed paths:");
+                for (marker, path) in entries {
+                    if path == "<root>" {
+                        let _ = writeln!(
+                            out,
+                            "  {marker} {} -> {}",
+                            report.left.path, report.right.path
+                        );
+                    } else {
+                        let _ = writeln!(out, "  {marker} {path}");
+                    }
+                }
+            }
+        }
+        render_warnings(report, options, &mut out);
+        return out;
+    }
+
+    let _ = writeln!(out);
+    if options.rich {
+        let title = if report.status == DiffStatus::Equal {
+            "Result"
+        } else {
+            "Changes"
+        };
+        section_rule(title, options, &mut out);
+    }
+    render_node(&report.root, 0, options, &mut out);
+    render_decompiled(report, options, &mut out);
+    render_warnings(report, options, &mut out);
+    out
+}
+
+fn render_plain_header(report: &DiffReport, options: &RenderOptions, out: &mut String) {
     let _ = writeln!(out, "{} {}", report.tool, report.version);
     let _ = writeln!(
         out,
@@ -39,33 +111,78 @@ pub fn render(report: &DiffReport, options: &RenderOptions) -> String {
         summary_parts(&report.summary).join(" | ")
     );
     let _ = writeln!(out, "elapsed: {} ms", report.elapsed_ms);
+}
 
-    if options.summary_only {
-        let entries = crate::render::changed_entries(&report.root);
-        if !entries.is_empty() {
-            let _ = writeln!(out);
-            let _ = writeln!(out, "changed paths:");
-            for (marker, path) in entries {
-                if path == "<root>" {
-                    let _ = writeln!(
-                        out,
-                        "  {marker} {} -> {}",
-                        report.left.path, report.right.path
-                    );
-                } else {
-                    let _ = writeln!(out, "  {marker} {path}");
-                }
-            }
-        }
-        render_warnings(report, options, &mut out);
-        return out;
-    }
+fn render_rich_header(report: &DiffReport, options: &RenderOptions, out: &mut String) {
+    let title = format!("{} {}", report.tool, report.version);
+    let _ = writeln!(out, "{}", paint(&title, BOLD_CYAN, options.color));
+    let _ = writeln!(
+        out,
+        "{}",
+        paint(&"=".repeat(RULE_WIDTH), DIM, options.color)
+    );
+    let _ = writeln!(
+        out,
+        "{} {}",
+        field_label("left", options),
+        input_summary(&report.left, options)
+    );
+    let _ = writeln!(
+        out,
+        "{} {}",
+        field_label("right", options),
+        input_summary(&report.right, options)
+    );
+    let _ = writeln!(
+        out,
+        "{} {}",
+        field_label("status", options),
+        status_badge(report.status, options)
+    );
+    let summary = summary_parts(&report.summary).join(" | ");
+    let _ = writeln!(
+        out,
+        "{} {}",
+        field_label("summary", options),
+        paint(&summary, DIM, options.color)
+    );
+    let _ = writeln!(
+        out,
+        "{} {}",
+        field_label("elapsed", options),
+        paint(&format!("{} ms", report.elapsed_ms), DIM, options.color)
+    );
+}
 
-    let _ = writeln!(out);
-    render_node(&report.root, 0, options, &mut out);
-    render_decompiled(report, options, &mut out);
-    render_warnings(report, options, &mut out);
-    out
+fn field_label(label: &str, options: &RenderOptions) -> String {
+    paint(&format!("{label:<8}"), CYAN, options.color)
+}
+
+fn input_summary(info: &ArtifactInfo, options: &RenderOptions) -> String {
+    format!(
+        "{}  {}",
+        paint(&info.path, BOLD_WHITE, options.color),
+        paint(
+            &format!("[{} | {}]", info.kind.label(), human_size(info.size)),
+            DIM,
+            options.color
+        )
+    )
+}
+
+fn section_rule(title: &str, options: &RenderOptions, out: &mut String) {
+    let prefix = "-- ";
+    let suffix = " ";
+    let used = prefix.chars().count() + title.chars().count() + suffix.chars().count();
+    let remaining = RULE_WIDTH.saturating_sub(used);
+    let _ = writeln!(
+        out,
+        "{}{}{}{}",
+        paint(prefix, DIM, options.color),
+        paint(title, BOLD_CYAN, options.color),
+        paint(suffix, DIM, options.color),
+        paint(&"-".repeat(remaining), DIM, options.color)
+    );
 }
 
 fn render_decompiled(report: &DiffReport, options: &RenderOptions, out: &mut String) {
@@ -90,38 +207,17 @@ fn render_decompiled_content(
     if decompiled.truncated || diff.truncated {
         header.push_str(" (truncated)");
     }
-    let _ = writeln!(out, "{}", paint(&header, CYAN, options.color));
+    let _ = writeln!(
+        out,
+        "{}",
+        paint(
+            &header,
+            if options.rich { BOLD_CYAN } else { CYAN },
+            options.color
+        )
+    );
     for hunk in &diff.hunks {
-        let _ = writeln!(
-            out,
-            "{pad}  {}",
-            paint(
-                &format!(
-                    "@@ -{},{} +{},{} @@",
-                    hunk.old_start, hunk.old_len, hunk.new_start, hunk.new_len
-                ),
-                CYAN,
-                options.color
-            )
-        );
-        for line in &hunk.lines {
-            let (prefix, color) = match line.tag {
-                TextTag::Equal => (' ', ""),
-                TextTag::Delete => ('-', RED),
-                TextTag::Insert => ('+', GREEN),
-            };
-            let text = truncate_chars(&line.text, 500);
-            let line = format!("{pad}  {prefix}{text}");
-            let _ = writeln!(
-                out,
-                "{}",
-                if color.is_empty() {
-                    line
-                } else {
-                    paint(&line, color, options.color)
-                }
-            );
-        }
+        render_hunk(hunk, &format!("{pad}  "), options, out);
     }
 }
 
@@ -130,17 +226,39 @@ fn render_warnings(report: &DiffReport, options: &RenderOptions, out: &mut Strin
         return;
     }
     let _ = writeln!(out);
-    let _ = writeln!(out, "{}:", paint("warnings", YELLOW, options.color));
-    for warning in &report.warnings {
-        let _ = writeln!(out, "  - {}", truncate_chars(warning, 500));
+    if options.rich {
+        section_rule("Warnings", options, out);
+        for warning in &report.warnings {
+            let _ = writeln!(
+                out,
+                "  {} {}",
+                paint("!", BOLD_YELLOW, options.color),
+                truncate_chars(warning, 500)
+            );
+        }
+    } else {
+        let _ = writeln!(out, "{}:", paint("warnings", YELLOW, options.color));
+        for warning in &report.warnings {
+            let _ = writeln!(out, "  - {}", truncate_chars(warning, 500));
+        }
     }
 }
 
 fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mut String) {
     let pad = " ".repeat(indent);
-    let marker = marker_for(node.status);
+    let marker = if options.rich {
+        paint(
+            &marker_for(node.status).to_string(),
+            marker_color(node.status),
+            options.color,
+        )
+    } else {
+        marker_for(node.status).to_string()
+    };
     let label = if node.label.is_empty() {
         String::new()
+    } else if options.rich {
+        format!("{} ", paint(&node.label, BOLD_WHITE, options.color))
     } else {
         format!("{} ", node.label)
     };
@@ -163,28 +281,7 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
                 );
             }
             for hunk in &diff.hunks {
-                let _ = writeln!(
-                    out,
-                    "{pad}  {}",
-                    paint(
-                        &format!(
-                            "@@ -{},{} +{},{} @@",
-                            hunk.old_start, hunk.old_len, hunk.new_start, hunk.new_len
-                        ),
-                        CYAN,
-                        options.color
-                    )
-                );
-                for line in &hunk.lines {
-                    let (prefix, color) = match line.tag {
-                        TextTag::Equal => (" ", DIM),
-                        TextTag::Delete => ("-", RED),
-                        TextTag::Insert => ("+", GREEN),
-                    };
-                    let text = render_text_line(line, options.color);
-                    let rendered = paint(&format!("{prefix}{text}"), color, options.color);
-                    let _ = writeln!(out, "{pad}  {rendered}");
-                }
+                render_hunk(hunk, &format!("{pad}  "), options, out);
             }
         }
         DiffBody::Tokens(diff) => {
@@ -260,24 +357,7 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
                 let _ = writeln!(out, "{}", paint(&detail, YELLOW, options.color));
                 if let Some(source) = &cell.source {
                     for hunk in &source.hunks {
-                        let _ = writeln!(
-                            out,
-                            "{pad}    @@ -{},{} +{},{} @@",
-                            hunk.old_start, hunk.old_len, hunk.new_start, hunk.new_len
-                        );
-                        for line in &hunk.lines {
-                            let (prefix, color) = match line.tag {
-                                TextTag::Equal => (" ", DIM),
-                                TextTag::Delete => ("-", RED),
-                                TextTag::Insert => ("+", GREEN),
-                            };
-                            let text = render_text_line(line, options.color);
-                            let _ = writeln!(
-                                out,
-                                "{pad}    {}",
-                                paint(&format!("{prefix}{text}"), color, options.color)
-                            );
-                        }
+                        render_hunk(hunk, &format!("{pad}    "), options, out);
                     }
                 }
             }
@@ -620,17 +700,78 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
     }
 }
 
+fn render_hunk(hunk: &TextHunk, line_pad: &str, options: &RenderOptions, out: &mut String) {
+    let header = format!(
+        "@@ -{},{} +{},{} @@",
+        hunk.old_start, hunk.old_len, hunk.new_start, hunk.new_len
+    );
+    let _ = writeln!(
+        out,
+        "{line_pad}{}",
+        paint(
+            &header,
+            if options.rich { BOLD_CYAN } else { CYAN },
+            options.color
+        )
+    );
+    let old_width = hunk
+        .lines
+        .iter()
+        .filter_map(|line| line.old_lineno)
+        .max()
+        .unwrap_or(1)
+        .to_string()
+        .len()
+        .max(3);
+    let new_width = hunk
+        .lines
+        .iter()
+        .filter_map(|line| line.new_lineno)
+        .max()
+        .unwrap_or(1)
+        .to_string()
+        .len()
+        .max(3);
+    for line in &hunk.lines {
+        let (prefix, color) = match line.tag {
+            TextTag::Equal => (" ", DIM),
+            TextTag::Delete => ("-", RED),
+            TextTag::Insert => ("+", GREEN),
+        };
+        let text = render_text_line(line, options.color);
+        let rendered = paint(&format!("{prefix}{text}"), color, options.color);
+        if options.rich {
+            let old = line
+                .old_lineno
+                .map(|number| format!("{number:>old_width$}"))
+                .unwrap_or_else(|| " ".repeat(old_width));
+            let new = line
+                .new_lineno
+                .map(|number| format!("{number:>new_width$}"))
+                .unwrap_or_else(|| " ".repeat(new_width));
+            let gutter = paint(&format!("{old} {new} | "), DIM, options.color);
+            let _ = writeln!(out, "{line_pad}{gutter}{rendered}");
+        } else {
+            let _ = writeln!(out, "{line_pad}{rendered}");
+        }
+    }
+}
+
 fn render_entries(entries: &[DiffNode], indent: usize, options: &RenderOptions, out: &mut String) {
     let pad = " ".repeat(indent);
     for entry in entries {
         match &entry.body {
             DiffBody::Equal(info) => {
-                let _ = writeln!(
-                    out,
+                let line = format!(
                     "{pad}= {} [{}]",
                     display_path(&entry.label),
                     info.kind.label()
                 );
+                if options.rich {
+                    let _ = writeln!(out, "{}", paint(&line, DIM, options.color));
+                } else {
+                    let _ = writeln!(out, "{line}");
+                }
             }
             DiffBody::OneSided(info) => {
                 let (prefix, color) = match info.side {
@@ -650,14 +791,50 @@ fn render_entries(entries: &[DiffNode], indent: usize, options: &RenderOptions, 
     }
 }
 
-fn paint_status(status: DiffStatus, color: bool) -> String {
-    let (text, code) = match status {
-        DiffStatus::Equal => ("EQUAL", GREEN),
-        DiffStatus::Different => ("DIFFERENT", RED),
-        DiffStatus::Unsupported => ("UNSUPPORTED", YELLOW),
-        DiffStatus::Error => ("ERROR", RED),
+fn status_style(status: DiffStatus) -> (&'static str, &'static str) {
+    match status {
+        DiffStatus::Equal => ("EQUAL", BOLD_GREEN),
+        DiffStatus::Different => ("DIFFERENT", BOLD_RED),
+        DiffStatus::Unsupported => ("UNSUPPORTED", BOLD_YELLOW),
+        DiffStatus::Error => ("ERROR", BOLD_RED),
+    }
+}
+
+fn status_badge(status: DiffStatus, options: &RenderOptions) -> String {
+    let (text, badge) = match status {
+        DiffStatus::Equal => ("EQUAL", BADGE_GREEN),
+        DiffStatus::Different => ("DIFFERENT", BADGE_RED),
+        DiffStatus::Unsupported => ("UNSUPPORTED", BADGE_YELLOW),
+        DiffStatus::Error => ("ERROR", BADGE_RED),
     };
+    if options.color {
+        format!("{badge} {text} {RESET}")
+    } else {
+        format!("[{text}]")
+    }
+}
+
+fn paint_status(status: DiffStatus, color: bool) -> String {
+    let (text, code) = status_style(status);
     paint(text, code, color)
+}
+
+fn marker_color(status: DiffStatus) -> &'static str {
+    match status {
+        DiffStatus::Equal => BOLD_GREEN,
+        DiffStatus::Different => BOLD_YELLOW,
+        DiffStatus::Unsupported | DiffStatus::Error => BOLD_RED,
+    }
+}
+
+fn marker_color_char(marker: char) -> &'static str {
+    match marker {
+        '+' => BOLD_GREEN,
+        '-' => BOLD_RED,
+        '~' => BOLD_YELLOW,
+        '!' => BOLD_RED,
+        _ => DIM,
+    }
 }
 
 fn paint(text: &str, code: &str, enabled: bool) -> String {

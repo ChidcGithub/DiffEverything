@@ -8,13 +8,13 @@
 
 ## Release Verification (v1.0-4596984fe5db)
 
-On 2026-11-27 13:27 CST, the local verification run passed fmt check, clippy, 279 tests, the release build and 189 smoke tests in sequence. Later commits add DEX, serialization, package, document and media tests, parallel comparison, progress, Kaspersky scanning, linked HTTP(S) downloads with embedded aria2, Git repository history comparison and a DEX performance fix; the current workspace test count is 325.
+On 2026-11-27 13:27 CST, the local verification run passed fmt check, clippy, 279 tests, the release build and 189 smoke tests in sequence. Later commits add DEX, serialization, package, document and media tests, parallel comparison, progress, Kaspersky scanning, linked HTTP(S) downloads with embedded aria2, Git repository history comparison and a DEX performance fix; the current workspace test count is 327.
 
 Final release artifact: `target/release/diff-everything.exe`, 50,950,656 bytes (48.59 MiB), SHA-256 `5B4CA0427B707BB9B384D7FC3ABA4E748FBBD981D3CAA531EB35E4B9EBA48E7D`.
 
 ## Extended Format Verification
 
-On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 325 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
+On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 327 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
 
 ## Linked Input Verification
 
@@ -28,12 +28,19 @@ The linked-input tests use local `tiny_http` servers and real temporary Git repo
 
 Manual release verification on Windows also downloaded two HTTP files with the embedded aria2 1.37.0 binary and compared them successfully. The embedded executable was extracted to `%TEMP%\diff-everything-tools\aria2c-1.37.0-<pid>.exe` with the expected 5,649,408-byte size. A release build comparison of the same repository history through `file://` URLs reported `2 -> 7 commit(s)`.
 
+## Terminal UI Verification
+
+- `help_is_grouped_and_includes_examples` runs `--help`, verifies the stable usage line, every task heading, `--style`, `--git-history`, and the examples/exit-code footer.
+- `rich_style_adds_banner_rules_and_line_numbers` runs with `--style rich --no-color --detail full`, verifies the banner/rule/status layout, the line-number gutter, and confirms that auto mode still emits the compact plain layout when stdout is piped.
+- Existing forced-progress coverage verifies the spinner message on stderr; the progress renderer now adds a fixed-width `[####----]` bar, counts and percentage without changing the test-visible label.
+- The rich layout is ASCII-only (banner rule `=`, section rules `-`, gutter `|`, markers `* + - ~ !`) so it remains readable in legacy Windows code pages; color is added separately through ANSI sequences.
+
 ## Test Results
 
 ```text
 cargo test --workspace
 10 CLI binary unit tests
-65 CLI tests
+67 CLI tests
 144 diff-core unit tests
 7 engine integration tests
 21 extended format integration tests
@@ -41,12 +48,12 @@ cargo test --workspace
 15 robustness tests
 3 folder merge integration tests
 2 folder patch integration tests
-= 325 tests, all passing
+= 327 tests, all passing
 ```
 
 ```text
 cargo test --workspace --release
-(325 tests, all passing)
+(327 tests, all passing)
 ```
 
 ```text

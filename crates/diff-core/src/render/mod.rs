@@ -10,6 +10,9 @@ use crate::model::{DiffBody, DiffNode, Summary};
 pub struct RenderOptions {
     pub color: bool,
     pub summary_only: bool,
+    /// Use the decorated terminal layout (headers, rules and line-number
+    /// gutters). Piped/redirected output uses the compact plain layout.
+    pub rich: bool,
 }
 
 impl Default for RenderOptions {
@@ -17,6 +20,7 @@ impl Default for RenderOptions {
         Self {
             color: true,
             summary_only: false,
+            rich: true,
         }
     }
 }

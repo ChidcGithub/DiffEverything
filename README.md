@@ -85,6 +85,10 @@ Common examples:
 .\target\release\diff-everything.exe old.txt new.txt --detail concise
 .\target\release\diff-everything.exe old.txt new.txt --detail full
 
+# Rich terminal layout (auto on a TTY; force it for captures/logs)
+.\target\release\diff-everything.exe old.txt new.txt --style rich
+.\target\release\diff-everything.exe old.txt new.txt --style plain
+
 # Head / tail / filter
 .\target\release\diff-everything.exe old.txt new.txt --head 20
 .\target\release\diff-everything.exe old.txt new.txt --last 20
@@ -179,6 +183,7 @@ Common examples:
 | **Output and filtering** | |
 | `-o, --output <FILE>` | Write the report to a file |
 | `--detail <concise\|full>` | Concise removes equal context and limits detail; full keeps the complete report and enables decompilation; default `concise` |
+| `--style <auto\|plain\|rich>` | ANSI/TUI layout; `auto` uses rich only on a terminal, `plain` keeps the compact piped layout, `rich` forces the decorated layout |
 | `--head <N>` / `--last <N>` | Keep only the first/last N detail units per file or entry |
 | `--filter <PATTERN>` | Match paths/labels or content; repeatable, glob supported; text keeps matching lines and `--context` context |
 | `--name-only` / `--quiet` / `--summary-only` | Changed paths only / no output / summary and changed paths only |
@@ -261,7 +266,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 325 Rust tests (unit + integration + CLI)
+# 327 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -273,10 +278,30 @@ The release was also validated with 189 end-to-end smoke tests and real external
 
 Coverage includes every leaf format and key path/cell/line assertions, invalid-input fallbacks, UTF-16 and large-file paths, archive limits, CLI exit codes and report validity, image reports, three-way merges, bsdiff and HDIFF13/HDIFF19 patches, syntax-tree diff, sync/session flows, notebook merges, remote and linked inputs, Git-history comparison, OCR/PDF visual reports, OpenAPI breaking changes, external comparators, and real downloaded PDF/Office/archive fixtures. Full results are in [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
-## Parallelism, Progress and Security
+## Terminal UI, Parallelism, Progress and Security
 
+- ANSI reports use a decorated layout automatically when stdout is a terminal: a labeled banner, aligned inputs, a colored status badge, summary/elapsed fields, section rules, styled markers and line-number gutters. `--style rich` forces it for redirected output; `--style plain` keeps the compact layout for scripts and logs. `--no-color` removes colors but keeps the rich layout.
+- CLI help is grouped by task (`Comparison`, `Output & display`, `Progress`, `Limits`, `Images`, `PDF & OCR`, `Merge & sync`, `Patches`, `Sessions & remote`, `Performance`, `Security`, `Approvals & decompilation`, `External tools`), wraps to the terminal width, and ends with common examples and exit codes.
 - Directory and archive entries are compared in parallel with rayon. `--jobs` defaults to `4`, `--jobs 0` uses all cores, `--jobs 1` is sequential, and larger values cap workers. Results are collected in path order, so reports remain deterministic.
-- Progress is written to stderr, never to the report. It is enabled automatically when stderr is a terminal; `--progress` forces it and `--no-progress` (or `--quiet`) disables it.
+- Progress is written to stderr, never to the report. It uses a spinner plus a `[####----]` bar, item counts and percentage. It is enabled automatically when stderr is a terminal; `--progress` forces it and `--no-progress` (or `--quiet`) disables it.
+- Example terminal layout (colors omitted):
+
+```text
+DiffEverything 1.0-a9e83ac8d2f5
+========================================================================
+left     fixtures\text\old.txt  [text | 105 B]
+right    fixtures\text\new.txt  [text | 160 B]
+status   [DIFFERENT]
+summary  1 files/entries compared | 1 changed | +3 -1 lines
+elapsed  7 ms
+
+-- Changes -------------------------------------------------------------
+~ text: +3 -1
+  @@ -2,1 +2,3 @@
+    2     | -- old text
+        2 | +- new text
+```
+
 - `--security-scan` uses only Kaspersky's local `avp.com` interface. Common installation paths are auto-detected; `--kaspersky <FILE>` overrides detection. Scans use `/i0` (report only), so files are never disinfected or deleted. Detected threats abort with exit code `2`; a missing Kaspersky installation or stopped service produces a warning and the diff continues. `--scan-timeout` bounds each scan.
 - Linked inputs (HTTP(S) files and Git repository URLs) are scanned automatically with the same local Kaspersky interface. `--no-security-scan` disables this default; `--security-scan` still enables it manually for any comparison.
 

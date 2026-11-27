@@ -147,11 +147,18 @@ fn render(handle: &ProgressHandle, force: bool) {
     let current = handle.inner.current.load(Ordering::Relaxed);
     let total = handle.inner.total.load(Ordering::Relaxed);
     let spinner = ["|", "/", "-", "\\"][handle.inner.spinner.fetch_add(1, Ordering::Relaxed) % 4];
-    let mut stderr = std::io::stderr().lock();
-    let _ = if total > 0 {
-        write!(stderr, "\r{spinner} {current}/{total} {label:.<80}")
+    let label: String = label.chars().take(44).collect();
+    let line = if total > 0 {
+        const BAR_WIDTH: usize = 20;
+        let current = current.min(total);
+        let filled = (current * BAR_WIDTH) / total;
+        let bar = format!("[{}{}]", "#".repeat(filled), "-".repeat(BAR_WIDTH - filled));
+        let percent = (current * 100) / total;
+        format!("{spinner} {label:<44}  {bar}  {current}/{total}  {percent:>3}%")
     } else {
-        write!(stderr, "\r{spinner} {label:.<90}")
+        format!("{spinner} {label}")
     };
+    let mut stderr = std::io::stderr().lock();
+    let _ = write!(stderr, "\r{line:<100}");
     let _ = stderr.flush();
 }

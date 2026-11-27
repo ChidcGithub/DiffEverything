@@ -201,11 +201,12 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 
 ## Rendering Strategy
 
-- **ANSI**: local CLI and CI logs; `NO_COLOR` / non-TTY disables colors.
+- **ANSI**: local CLI and CI logs. The rich layout (banner, aligned input/status/summary block, section rules, colored markers and line-number gutters) is selected automatically for a terminal; `--style rich` forces it and `--style plain` keeps the compact layout for pipes and scripts. `NO_COLOR` / `--no-color` removes colors but preserves the selected layout. The TUI always uses the rich layout.
 - **JSON**: stable machine interface, validated by parsing in CLI tests.
 - **Markdown**: PR comments and document archives.
 - **HTML**: self-contained single file for sharing.
 - **unified**: compatible with `diff`/`patch` workflows.
+- CLI help is grouped by task headings and uses clap styling plus a terminal-width-aware template; examples and exit codes are appended as after-help.
 
 ## Parallelism, Progress and Security
 

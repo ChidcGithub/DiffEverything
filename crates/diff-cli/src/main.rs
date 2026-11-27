@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use clap::builder::styling::{AnsiColor, Styles};
 use clap::{Parser, ValueEnum};
 use diff_core::engine::DiffMode;
 use diff_core::progress::ProgressHandle;
@@ -14,11 +15,37 @@ mod link;
 mod remote;
 mod tui;
 
+const HELP_STYLES: Styles = Styles::styled()
+    .header(AnsiColor::BrightCyan.on_default().bold())
+    .usage(AnsiColor::BrightCyan.on_default().bold())
+    .literal(AnsiColor::BrightGreen.on_default().bold())
+    .placeholder(AnsiColor::BrightBlue.on_default())
+    .valid(AnsiColor::BrightGreen.on_default())
+    .invalid(AnsiColor::BrightRed.on_default())
+    .error(AnsiColor::BrightRed.on_default().bold());
+
+const CLI_AFTER_HELP: &str = "\
+Examples:
+  diff-everything old.txt new.txt
+  diff-everything left/ right/ --jobs 8 --progress
+  diff-everything old.apk new.apk --detail full -y
+  diff-everything https://host/old.zip https://host/new.zip
+  diff-everything repo-a repo-b --git-history --detail full
+
+Exit codes: 0 same, 1 differences or merge conflicts, 2 runtime error.
+Use --style rich for the decorated terminal layout; --style plain keeps the compact layout.";
+
 #[derive(Debug, Parser)]
 #[command(
     name = "diff-everything",
+    bin_name = "diff-everything",
     version = env!("DIFF_VERSION"),
-    about = "Compare text, code, structured data, tables, images, documents, binaries, folders and archives"
+    about = "Compare files, folders, archives, documents, media, links and Git histories",
+    long_about = "DiffEverything compares files, folders, archives, documents, media, binaries, remote links and Git repositories. Formats are detected automatically and reports are rendered as ANSI, TUI, JSON, Markdown, HTML or unified diff.",
+    after_help = CLI_AFTER_HELP,
+    override_usage = "diff-everything [OPTIONS] [LEFT] [RIGHT]",
+    styles = HELP_STYLES,
+    max_term_width = 100
 )]
 struct Cli {
     /// Left / old input (optional with --load-session)
@@ -26,29 +53,36 @@ struct Cli {
     /// Right / new input (optional with --load-session)
     right: Option<PathBuf>,
 
-    /// Output format
-    #[arg(help_heading = "Output", short, long, value_enum, default_value_t = Format::Ansi)]
-    format: Format,
-
-    /// Write the report to a file instead of stdout
-    #[arg(help_heading = "Output", short, long)]
-    output: Option<PathBuf>,
-
     /// Lines of context around text changes
-    #[arg(help_heading = "Comparison", long, default_value_t = 3)]
+    #[arg(
+        help_heading = "Comparison",
+        long,
+        default_value_t = 3,
+        value_name = "N"
+    )]
     context: usize,
 
-    /// Maximum hex rows / detail rows
-    #[arg(help_heading = "Limits", long, default_value_t = 200)]
-    max_rows: usize,
+    /// Text diff mode: line, tree-sitter token, syntax tree, or graph events
+    #[arg(
+        help_heading = "Comparison",
+        long,
+        value_enum,
+        default_value_t = Mode::Text,
+        value_name = "MODE"
+    )]
+    mode: Mode,
 
-    /// Maximum changed rows in a CSV/TSV table
-    #[arg(help_heading = "Limits", long, default_value_t = 500)]
-    max_table_rows: usize,
+    /// Ignore comments (enables token mode for supported source languages)
+    #[arg(help_heading = "Comparison", long)]
+    ignore_comments: bool,
 
-    /// Maximum changed cells in a workbook sheet
-    #[arg(help_heading = "Limits", long, default_value_t = 5000)]
-    max_workbook_cells: usize,
+    /// Ignore whitespace-only changes in text comparisons
+    #[arg(help_heading = "Comparison", long)]
+    ignore_whitespace: bool,
+
+    /// Ignore case-only changes in text comparisons
+    #[arg(help_heading = "Comparison", long)]
+    ignore_case: bool,
 
     /// Column used to align CSV/TSV rows (default: row index)
     #[arg(help_heading = "Comparison", long, value_name = "COLUMN")]
@@ -57,6 +91,124 @@ struct Cli {
     /// Exclude paths in directory comparisons; may be repeated
     #[arg(help_heading = "Comparison", long = "exclude", value_name = "GLOB")]
     exclude: Vec<String>,
+
+    /// Compare the history of two Git repositories or repository URLs
+    #[arg(help_heading = "Comparison", long)]
+    git_history: bool,
+
+    /// Output format
+    #[arg(
+        help_heading = "Output & display",
+        short,
+        long,
+        value_enum,
+        default_value_t = Format::Ansi,
+        value_name = "FORMAT"
+    )]
+    format: Format,
+
+    /// Write the report to a file instead of stdout
+    #[arg(help_heading = "Output & display", short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+
+    /// Detail level: concise or full
+    #[arg(
+        help_heading = "Output & display",
+        long,
+        value_enum,
+        default_value_t = DetailMode::Concise,
+        value_name = "MODE"
+    )]
+    detail: DetailMode,
+
+    /// Terminal layout: auto, plain, or rich (Ansi/TUI only)
+    #[arg(
+        help_heading = "Output & display",
+        long,
+        value_enum,
+        default_value_t = StyleMode::Auto,
+        value_name = "STYLE"
+    )]
+    style: StyleMode,
+
+    /// Only print the summary and changed paths
+    #[arg(help_heading = "Output & display", long)]
+    summary_only: bool,
+
+    /// Print changed paths only
+    #[arg(help_heading = "Output & display", long)]
+    name_only: bool,
+
+    /// No output; use the exit code only
+    #[arg(help_heading = "Output & display", long)]
+    quiet: bool,
+
+    /// Disable ANSI colors
+    #[arg(help_heading = "Output & display", long)]
+    no_color: bool,
+
+    /// Show only the first N detail units per file/entry
+    #[arg(
+        help_heading = "Output & display",
+        long,
+        value_name = "N",
+        conflicts_with = "last"
+    )]
+    head: Option<usize>,
+
+    /// Show only the last N detail units per file/entry
+    #[arg(
+        help_heading = "Output & display",
+        long,
+        value_name = "N",
+        conflicts_with = "head"
+    )]
+    last: Option<usize>,
+
+    /// Keep paths/labels or detail content matching PATTERN; may be repeated
+    #[arg(
+        help_heading = "Output & display",
+        long = "filter",
+        value_name = "PATTERN"
+    )]
+    filter: Vec<String>,
+
+    /// Force progress output even when stderr is not a terminal
+    #[arg(help_heading = "Progress", long, conflicts_with = "no_progress")]
+    progress: bool,
+
+    /// Hide progress output (auto-enabled when stderr is a terminal)
+    #[arg(help_heading = "Progress", long)]
+    no_progress: bool,
+
+    /// Maximum hex rows / detail rows
+    #[arg(help_heading = "Limits", long, default_value_t = 200, value_name = "N")]
+    max_rows: usize,
+
+    /// Maximum changed rows in a CSV/TSV table
+    #[arg(help_heading = "Limits", long, default_value_t = 500, value_name = "N")]
+    max_table_rows: usize,
+
+    /// Maximum changed cells in a workbook sheet
+    #[arg(
+        help_heading = "Limits",
+        long,
+        default_value_t = 5000,
+        value_name = "N"
+    )]
+    max_workbook_cells: usize,
+
+    /// Maximum bytes per file for detailed diffing
+    #[arg(help_heading = "Limits", long, value_name = "BYTES")]
+    max_file_bytes: Option<u64>,
+
+    /// Maximum entries in a directory or archive
+    #[arg(help_heading = "Limits", long, value_name = "N")]
+    max_entries: Option<usize>,
+
+    /// Maximum recursive archive/directory depth
+    #[arg(help_heading = "Limits", long, default_value_t = 32, value_name = "N")]
+    max_depth: usize,
 
     /// Write a visual heatmap for two image inputs
     #[arg(help_heading = "Images", long, value_name = "FILE")]
@@ -75,6 +227,57 @@ struct Cli {
     )]
     image_threshold: f64,
 
+    /// Render PDF pages and compare them visually (requires pdftoppm)
+    #[arg(help_heading = "PDF & OCR", long)]
+    pdf_visual: bool,
+
+    /// Path to pdftoppm, if not on PATH
+    #[arg(help_heading = "PDF & OCR", long, value_name = "FILE")]
+    pdftoppm: Option<PathBuf>,
+
+    /// DPI for PDF page rendering
+    #[arg(
+        help_heading = "PDF & OCR",
+        long,
+        default_value_t = 100,
+        value_name = "N"
+    )]
+    pdf_dpi: u32,
+
+    /// Maximum PDF pages to render
+    #[arg(
+        help_heading = "PDF & OCR",
+        long,
+        default_value_t = 50,
+        value_name = "N"
+    )]
+    pdf_max_pages: usize,
+
+    /// Directory for PDF visual images and report.html
+    #[arg(help_heading = "PDF & OCR", long, value_name = "DIR")]
+    pdf_output_dir: Option<PathBuf>,
+
+    /// Compare images by OCR text (requires tesseract)
+    #[arg(help_heading = "PDF & OCR", long)]
+    ocr: bool,
+
+    /// Path to tesseract, if not on PATH
+    #[arg(help_heading = "PDF & OCR", long, value_name = "FILE")]
+    tesseract: Option<PathBuf>,
+
+    /// Directory containing tessdata/*.traineddata
+    #[arg(help_heading = "PDF & OCR", long, value_name = "DIR")]
+    tessdata: Option<PathBuf>,
+
+    /// Tesseract language, for example eng or chi_sim
+    #[arg(
+        help_heading = "PDF & OCR",
+        long,
+        default_value = "eng",
+        value_name = "LANG"
+    )]
+    ocr_language: String,
+
     /// Three-way merge base file or directory; enables merge mode
     #[arg(help_heading = "Merge & sync", long, value_name = "FILE|DIR")]
     base: Option<PathBuf>,
@@ -83,16 +286,40 @@ struct Cli {
     #[arg(help_heading = "Merge & sync", long, value_name = "FILE|DIR")]
     merge_output: Option<PathBuf>,
 
+    /// Folder sync plan direction
+    #[arg(help_heading = "Merge & sync", long, value_enum, value_name = "MODE")]
+    sync: Option<SyncModeArg>,
+
+    /// Apply the folder sync plan instead of only printing it
+    #[arg(help_heading = "Merge & sync", long)]
+    sync_apply: bool,
+
+    /// Backup overwritten/deleted files here when applying sync
+    #[arg(help_heading = "Merge & sync", long, value_name = "DIR")]
+    backup_dir: Option<PathBuf>,
+
     /// Write a bsdiff patch from left to right (directories use a folder patch)
     #[arg(help_heading = "Patches", long, value_name = "FILE")]
     patch_output: Option<PathBuf>,
 
     /// Patch container format for --patch-output/--apply-patch
-    #[arg(help_heading = "Patches", long, value_enum, default_value_t = PatchFormatArg::Bsdiff)]
+    #[arg(
+        help_heading = "Patches",
+        long,
+        value_enum,
+        default_value_t = PatchFormatArg::Bsdiff,
+        value_name = "FORMAT"
+    )]
     patch_format: PatchFormatArg,
 
     /// Compression for --patch-format hdiff-rust (files and directories)
-    #[arg(help_heading = "Patches", long, value_enum, default_value_t = PatchCompressArg::None)]
+    #[arg(
+        help_heading = "Patches",
+        long,
+        value_enum,
+        default_value_t = PatchCompressArg::None,
+        value_name = "ALGORITHM"
+    )]
     patch_compress: PatchCompressArg,
 
     /// Path to hdiffz, if not on PATH (used with --patch-format hdiff)
@@ -106,31 +333,6 @@ struct Cli {
     /// Apply a folder patch or HDiffPatch to LEFT and write to --merge-output
     #[arg(help_heading = "Patches", long, value_name = "FILE")]
     apply_patch: Option<PathBuf>,
-
-    /// Delegate comparison to an external program (LEFT and RIGHT are appended)
-    #[arg(help_heading = "External tools", long, value_name = "PROGRAM")]
-    external_tool: Option<String>,
-
-    /// Extra argument passed to --external-tool; may be repeated
-    #[arg(
-        help_heading = "External tools",
-        long = "external-arg",
-        value_name = "ARG",
-        allow_hyphen_values = true
-    )]
-    external_arg: Vec<String>,
-
-    /// Folder sync plan direction
-    #[arg(help_heading = "Merge & sync", long, value_enum, value_name = "MODE")]
-    sync: Option<SyncModeArg>,
-
-    /// Apply the folder sync plan instead of only printing it
-    #[arg(help_heading = "Merge & sync", long)]
-    sync_apply: bool,
-
-    /// Backup overwritten/deleted files here when applying sync
-    #[arg(help_heading = "Merge & sync", long, value_name = "DIR")]
-    backup_dir: Option<PathBuf>,
 
     /// Save the comparison paths and options as a session file
     #[arg(help_heading = "Sessions & remote", long, value_name = "FILE")]
@@ -152,129 +354,7 @@ struct Cli {
     #[arg(help_heading = "Sessions & remote", long, value_name = "FILE")]
     sftp_known_hosts: Option<PathBuf>,
 
-    /// Render PDF pages and compare them visually (requires pdftoppm)
-    #[arg(help_heading = "PDF & OCR", long)]
-    pdf_visual: bool,
-
-    /// Path to pdftoppm, if not on PATH
-    #[arg(help_heading = "PDF & OCR", long, value_name = "FILE")]
-    pdftoppm: Option<PathBuf>,
-
-    /// DPI for PDF page rendering
-    #[arg(help_heading = "PDF & OCR", long, default_value_t = 100)]
-    pdf_dpi: u32,
-
-    /// Maximum PDF pages to render
-    #[arg(help_heading = "PDF & OCR", long, default_value_t = 50)]
-    pdf_max_pages: usize,
-
-    /// Directory for PDF visual images and report.html
-    #[arg(help_heading = "PDF & OCR", long, value_name = "DIR")]
-    pdf_output_dir: Option<PathBuf>,
-
-    /// Compare images by OCR text (requires tesseract)
-    #[arg(help_heading = "PDF & OCR", long)]
-    ocr: bool,
-
-    /// Path to tesseract, if not on PATH
-    #[arg(help_heading = "PDF & OCR", long, value_name = "FILE")]
-    tesseract: Option<PathBuf>,
-
-    /// Directory containing tessdata/*.traineddata
-    #[arg(help_heading = "PDF & OCR", long, value_name = "DIR")]
-    tessdata: Option<PathBuf>,
-
-    /// Tesseract language, for example eng or chi_sim
-    #[arg(help_heading = "PDF & OCR", long, default_value = "eng")]
-    ocr_language: String,
-
-    /// Print changed paths only
-    #[arg(help_heading = "Output", long)]
-    name_only: bool,
-
-    /// No output; use the exit code only
-    #[arg(help_heading = "Output", long)]
-    quiet: bool,
-
-    /// Disable ANSI colors
-    #[arg(help_heading = "Output", long)]
-    no_color: bool,
-
-    /// Only print the summary and changed paths
-    #[arg(help_heading = "Output", long)]
-    summary_only: bool,
-
-    /// Show only the first N detail units per file/entry
-    #[arg(
-        help_heading = "Output",
-        long,
-        value_name = "N",
-        conflicts_with = "last"
-    )]
-    head: Option<usize>,
-
-    /// Show only the last N detail units per file/entry
-    #[arg(
-        help_heading = "Output",
-        long,
-        value_name = "N",
-        conflicts_with = "head"
-    )]
-    last: Option<usize>,
-
-    /// Keep paths/labels or detail content matching PATTERN; may be repeated
-    #[arg(help_heading = "Output", long = "filter", value_name = "PATTERN")]
-    filter: Vec<String>,
-
-    /// Detail level: concise or full
-    #[arg(help_heading = "Output", long, value_enum, default_value_t = DetailMode::Concise)]
-    detail: DetailMode,
-
-    /// Assume yes for prompts (decompilation and downloads over 100 MiB)
-    #[arg(help_heading = "Approvals", short = 'y', long)]
-    yes: bool,
-
-    /// Optional external objdump path; default uses embedded pure-Rust decoders
-    #[arg(help_heading = "Decompilation", long, value_name = "FILE")]
-    objdump: Option<PathBuf>,
-
-    /// Text diff mode: line, tree-sitter token, syntax tree, or graph events
-    #[arg(help_heading = "Comparison", long, value_enum, default_value_t = Mode::Text)]
-    mode: Mode,
-
-    /// Ignore comments (enables token mode for supported source languages)
-    #[arg(help_heading = "Comparison", long)]
-    ignore_comments: bool,
-
-    /// Ignore whitespace-only changes in text comparisons
-    #[arg(help_heading = "Comparison", long)]
-    ignore_whitespace: bool,
-
-    /// Ignore case-only changes in text comparisons
-    #[arg(help_heading = "Comparison", long)]
-    ignore_case: bool,
-
-    /// Maximum bytes per file for detailed diffing
-    #[arg(help_heading = "Limits", long)]
-    max_file_bytes: Option<u64>,
-
-    /// Maximum entries in a directory or archive
-    #[arg(help_heading = "Limits", long)]
-    max_entries: Option<usize>,
-
-    /// Maximum recursive archive/directory depth
-    #[arg(long, default_value_t = 32, value_name = "N", help_heading = "Limits")]
-    max_depth: usize,
-
-    /// Hide progress output (progress is shown on stderr in interactive terminals)
-    #[arg(help_heading = "Output", long)]
-    no_progress: bool,
-
-    /// Force progress output even when stderr is not a terminal
-    #[arg(help_heading = "Output", long, conflicts_with = "no_progress")]
-    progress: bool,
-
-    /// Worker threads for directory/archive comparison (default 4; 0 = all cores, 1 = sequential)
+    /// Worker threads for directory/archive comparison (0 = all cores, 1 = sequential)
     #[arg(
         help_heading = "Performance",
         long,
@@ -296,10 +376,6 @@ struct Cli {
     )]
     download_timeout: u64,
 
-    /// Treat both inputs as Git repositories and compare their history
-    #[arg(help_heading = "Comparison", long)]
-    git_history: bool,
-
     /// Scan both inputs with installed Kaspersky before comparing
     #[arg(help_heading = "Security", long)]
     security_scan: bool,
@@ -320,6 +396,27 @@ struct Cli {
         value_name = "SECONDS"
     )]
     scan_timeout: u64,
+
+    /// Assume yes for prompts (decompilation and downloads over 100 MiB)
+    #[arg(help_heading = "Approvals & decompilation", short = 'y', long)]
+    yes: bool,
+
+    /// Optional external objdump path; default uses embedded pure-Rust decoders
+    #[arg(help_heading = "Approvals & decompilation", long, value_name = "FILE")]
+    objdump: Option<PathBuf>,
+
+    /// Delegate comparison to an external program (LEFT and RIGHT are appended)
+    #[arg(help_heading = "External tools", long, value_name = "PROGRAM")]
+    external_tool: Option<String>,
+
+    /// Extra argument passed to --external-tool; may be repeated
+    #[arg(
+        help_heading = "External tools",
+        long = "external-arg",
+        value_name = "ARG",
+        allow_hyphen_values = true
+    )]
+    external_arg: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -360,6 +457,13 @@ enum Mode {
 enum DetailMode {
     Concise,
     Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum StyleMode {
+    Auto,
+    Plain,
+    Rich,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -1075,12 +1179,18 @@ fn run() -> Result<i32> {
         return Ok(exit_code(report.status));
     }
 
+    let rich = match cli.style {
+        StyleMode::Auto => io::stdout().is_terminal(),
+        StyleMode::Plain => false,
+        StyleMode::Rich => true,
+    };
     let render_options = RenderOptions {
         color: !cli.no_color
             && cli.output.is_none()
             && std::env::var_os("NO_COLOR").is_none()
             && io::stdout().is_terminal(),
         summary_only: cli.summary_only,
+        rich,
     };
 
     if cli.format == Format::Tui && cli.output.is_none() && io::stdout().is_terminal() {
@@ -1089,6 +1199,7 @@ fn run() -> Result<i32> {
             &RenderOptions {
                 color: true,
                 summary_only: cli.summary_only,
+                rich: true,
             },
         );
         tui::run("DiffEverything", &ansi)?;
