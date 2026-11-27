@@ -22,3 +22,4 @@
 *.odt -text
 *.odp -text
 *.epub -text
+*.exe -text

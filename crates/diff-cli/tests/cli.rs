@@ -1517,6 +1517,257 @@ fn security_scan_blocks_detected_files_with_mock_kaspersky() {
     );
 }
 
+#[test]
+fn linked_download_over_100_mib_requires_yes() {
+    use tiny_http::{Method, Response, Server, StatusCode};
+
+    let server = Server::http("127.0.0.1:0").unwrap();
+    let port = server.server_addr().to_ip().unwrap().port();
+    std::thread::spawn(move || {
+        for request in server.incoming_requests() {
+            if request.method() == &Method::Head {
+                let response = Response::new(
+                    StatusCode(200),
+                    Vec::new(),
+                    std::io::empty(),
+                    Some(101 * 1024 * 1024),
+                    None,
+                )
+                .with_chunked_threshold(usize::MAX);
+                let _ = request.respond(response);
+            } else {
+                let _ = request.respond(Response::from_string("small"));
+            }
+        }
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("local.txt");
+    std::fs::write(&local, "local").unwrap();
+    let url = format!("http://127.0.0.1:{port}/big.bin");
+    let output = run_str(&[
+        url.as_str(),
+        local.to_str().unwrap(),
+        "--no-security-scan",
+        "--no-progress",
+    ]);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    let error = stderr(&output);
+    assert!(error.contains("100 MiB"), "{error}");
+    assert!(error.contains("rerun with -y"), "{error}");
+}
+
+#[test]
+fn linked_inputs_scan_with_kaspersky_by_default() {
+    use tiny_http::{Response, Server};
+
+    let server = Server::http("127.0.0.1:0").unwrap();
+    let port = server.server_addr().to_ip().unwrap().port();
+    let text_dir = workspace_path("fixtures/text");
+    std::thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let name = request.url().trim_start_matches('/');
+            match std::fs::read(text_dir.join(name)) {
+                Ok(bytes) => {
+                    let _ = request.respond(Response::from_data(bytes));
+                }
+                Err(_) => {
+                    let _ = request.respond(Response::empty(404));
+                }
+            }
+        }
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let scanner = mock_kaspersky(dir.path(), "No threats detected.");
+    let old = format!("http://127.0.0.1:{port}/old.txt");
+    let new = format!("http://127.0.0.1:{port}/new.txt");
+    let output = run_str(&[
+        old.as_str(),
+        new.as_str(),
+        "--kaspersky",
+        scanner.to_str().unwrap(),
+        "--no-progress",
+        "--no-color",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let error = stderr(&output);
+    assert!(
+        error.contains("scanning linked inputs by default"),
+        "{error}"
+    );
+    assert!(error.contains("no threats detected"), "{error}");
+
+    let skipped = run_str(&[
+        old.as_str(),
+        new.as_str(),
+        "--kaspersky",
+        scanner.to_str().unwrap(),
+        "--no-security-scan",
+        "--no-progress",
+        "--no-color",
+    ]);
+    assert_eq!(skipped.status.code(), Some(1), "{}", stderr(&skipped));
+    assert!(
+        !stderr(&skipped).contains("Kaspersky"),
+        "{}",
+        stderr(&skipped)
+    );
+}
+
+#[test]
+fn git_history_compares_commits_with_concise_and_full_detail() {
+    if !git_available() {
+        return;
+    }
+    let (_root, left, right) = git_history_pair();
+    let concise = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--git-history",
+        "--format",
+        "json",
+        "--no-progress",
+    ]);
+    assert_eq!(concise.status.code(), Some(1), "{}", stderr(&concise));
+    let concise: Value = serde_json::from_slice(&concise.stdout).unwrap();
+    assert_eq!(concise["root"]["body"]["format"], "git-history");
+    assert_eq!(concise["root"]["body"]["truncated"], true);
+    let concise_changes = concise["root"]["body"]["changes"].as_array().unwrap().len();
+    assert_eq!(concise_changes, 4, "{concise:#}");
+
+    let full = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--git-history",
+        "--detail",
+        "full",
+        "--format",
+        "json",
+        "--no-progress",
+    ]);
+    assert_eq!(full.status.code(), Some(1), "{}", stderr(&full));
+    let full: Value = serde_json::from_slice(&full.stdout).unwrap();
+    let full_changes = full["root"]["body"]["changes"].as_array().unwrap().len();
+    assert!(full_changes > concise_changes, "{full:#}");
+    assert_eq!(full["root"]["body"]["truncated"], false);
+    assert!(
+        full["summary"]["structured_changes"].as_u64().unwrap() > 4,
+        "{full:#}"
+    );
+}
+
+#[test]
+fn git_history_clones_url_inputs() {
+    if !git_available() {
+        return;
+    }
+    let (root, left, right) = git_history_pair();
+    let left_bare = root.path().join("left.git");
+    let right_bare = root.path().join("right.git");
+    run_git(&[
+        "clone",
+        "--bare",
+        "-q",
+        left.to_str().unwrap(),
+        left_bare.to_str().unwrap(),
+    ]);
+    run_git(&[
+        "clone",
+        "--bare",
+        "-q",
+        right.to_str().unwrap(),
+        right_bare.to_str().unwrap(),
+    ]);
+    let left = url::Url::from_file_path(&left_bare).unwrap().to_string();
+    let right = url::Url::from_file_path(&right_bare).unwrap().to_string();
+    let output = run_str(&[
+        left.as_str(),
+        right.as_str(),
+        "--format",
+        "json",
+        "--no-progress",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["left"]["kind"], "git_history");
+    assert_eq!(value["right"]["kind"], "git_history");
+    let label = value["root"]["label"].as_str().unwrap();
+    assert!(label.contains("2 -> 7 commit(s)"), "{label}");
+}
+
+fn git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn run_git(args: &[&str]) {
+    let status = Command::new("git")
+        .args(args)
+        .status()
+        .expect("failed to run git");
+    assert!(status.success(), "git {args:?} failed");
+}
+
+fn git_history_pair() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let root = tempfile::tempdir().unwrap();
+    let left = root.path().join("left");
+    let right = root.path().join("right");
+    let left_text = left.to_str().unwrap();
+    let right_text = right.to_str().unwrap();
+    run_git(&["init", "-q", "-b", "main", left_text]);
+    run_git(&["-C", left_text, "config", "user.email", "test@example.com"]);
+    run_git(&["-C", left_text, "config", "user.name", "Tester"]);
+    std::fs::write(left.join("base.txt"), "base").unwrap();
+    run_git(&["-C", left_text, "add", "."]);
+    run_git(&["-C", left_text, "commit", "-q", "-m", "base commit"]);
+    std::fs::write(left.join("left.txt"), "left").unwrap();
+    run_git(&["-C", left_text, "add", "."]);
+    run_git(&["-C", left_text, "commit", "-q", "-m", "left only commit"]);
+    run_git(&["clone", "-q", left_text, right_text]);
+    run_git(&["-C", right_text, "config", "user.email", "test@example.com"]);
+    run_git(&["-C", right_text, "config", "user.name", "Tester"]);
+    for index in 1..=5 {
+        std::fs::write(
+            right.join(format!("right-{index}.txt")),
+            format!("right {index}"),
+        )
+        .unwrap();
+        let message = format!("right commit {index}");
+        run_git(&["-C", right_text, "add", "."]);
+        run_git(&["-C", right_text, "commit", "-q", "-m", &message]);
+    }
+    (root, left, right)
+}
+
+fn mock_kaspersky(dir: &Path, report: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let scanner = dir.join("mock-avp.cmd");
+        let script = format!(
+            "@echo off\r\nsetlocal enabledelayedexpansion\r\nset REPORT=\r\nfor %%A in (%*) do (\r\n  set ARG=%%A\r\n  if \"!ARG:~0,3!\"==\"/R:\" set REPORT=!ARG:~3!\r\n)\r\necho {report} > \"%REPORT%\"\r\nexit /b 0\r\n"
+        );
+        std::fs::write(&scanner, script).unwrap();
+        scanner
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let scanner = dir.join("mock-avp.sh");
+        let script = format!(
+            "#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in /R:*) report=\"${{arg#/R:}}\";; esac; done\nprintf '{report}\\n' > \"$report\"\n"
+        );
+        std::fs::write(&scanner, script).unwrap();
+        let mut permissions = std::fs::metadata(&scanner).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&scanner, permissions).unwrap();
+        scanner
+    }
+}
+
 fn workspace_path(relative: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop();

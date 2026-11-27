@@ -78,6 +78,7 @@ pub enum FileKind {
     Rtf,
     Eml,
     Video,
+    GitHistory,
     Unknown,
 }
 
@@ -152,6 +153,7 @@ impl FileKind {
             Self::Rtf => "rtf",
             Self::Eml => "eml",
             Self::Video => "video",
+            Self::GitHistory => "git-history",
             Self::Unknown => "unknown",
         }
     }
@@ -193,6 +195,7 @@ impl FileKind {
                 | Self::Protobuf
                 | Self::Rtf
                 | Self::Eml
+                | Self::GitHistory
         )
     }
 }

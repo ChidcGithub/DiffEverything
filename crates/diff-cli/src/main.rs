@@ -10,6 +10,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod link;
 mod remote;
 mod tui;
 
@@ -229,8 +230,8 @@ struct Cli {
     #[arg(help_heading = "Output", long, value_enum, default_value_t = DetailMode::Concise)]
     detail: DetailMode,
 
-    /// Automatically approve decompilation in full detail mode
-    #[arg(help_heading = "Decompilation", short = 'y', long)]
+    /// Assume yes for prompts (decompilation and downloads over 100 MiB)
+    #[arg(help_heading = "Approvals", short = 'y', long)]
     yes: bool,
 
     /// Optional external objdump path; default uses embedded pure-Rust decoders
@@ -282,9 +283,30 @@ struct Cli {
     )]
     jobs: usize,
 
+    /// Path to aria2c; defaults to the embedded Windows build, then PATH
+    #[arg(help_heading = "Performance", long, value_name = "FILE")]
+    aria2: Option<PathBuf>,
+
+    /// Download timeout in seconds for linked files and Git clones
+    #[arg(
+        help_heading = "Performance",
+        long,
+        default_value_t = 600,
+        value_name = "SECONDS"
+    )]
+    download_timeout: u64,
+
+    /// Treat both inputs as Git repositories and compare their history
+    #[arg(help_heading = "Comparison", long)]
+    git_history: bool,
+
     /// Scan both inputs with installed Kaspersky before comparing
     #[arg(help_heading = "Security", long)]
     security_scan: bool,
+
+    /// Disable the automatic Kaspersky scan used by linked-file comparison
+    #[arg(help_heading = "Security", long, conflicts_with = "security_scan")]
+    no_security_scan: bool,
 
     /// Path to Kaspersky avp.com; auto-detected when omitted
     #[arg(help_heading = "Security", long, value_name = "FILE")]
@@ -359,6 +381,25 @@ impl From<SyncModeArg> for diff_core::sync::SyncMode {
     }
 }
 
+fn resolve_input(
+    spec: &Path,
+    temp_dir: &Path,
+    auth: &remote::RemoteAuth,
+    git_history: bool,
+    download: link::DownloadConfig<'_>,
+) -> Result<(PathBuf, String)> {
+    let text = spec.to_string_lossy().into_owned();
+    if git_history {
+        let repo = link::resolve_repository(&text, temp_dir, download.progress, download.timeout)?;
+        return Ok((repo, text));
+    }
+    if link::is_http_link(&text) {
+        let path = link::resolve_http_input(&text, temp_dir, download)?;
+        return Ok((path, text));
+    }
+    remote::resolve_input(spec, temp_dir, auth)
+}
+
 fn main() {
     let code = match run() {
         Ok(code) => code,
@@ -386,6 +427,9 @@ fn run() -> Result<i32> {
     }
     if cli.scan_timeout == 0 {
         anyhow::bail!("--scan-timeout must be at least 1 second");
+    }
+    if cli.download_timeout == 0 {
+        anyhow::bail!("--download-timeout must be at least 1 second");
     }
     let content_filter = if cli.head.is_some() || cli.last.is_some() || !cli.filter.is_empty() {
         Some(
@@ -430,6 +474,13 @@ fn run() -> Result<i32> {
         options.max_zip_entries = max_entries;
     }
 
+    let progress =
+        if cli.quiet || cli.no_progress || (!cli.progress && !std::io::stderr().is_terminal()) {
+            ProgressHandle::disabled()
+        } else {
+            ProgressHandle::new(true)
+        };
+
     let (left_spec, right_spec) = if let Some(session_path) = &cli.load_session {
         if cli.left.is_some() || cli.right.is_some() {
             anyhow::bail!("do not pass LEFT/RIGHT together with --load-session");
@@ -457,7 +508,31 @@ fn run() -> Result<i32> {
         }
     };
 
-    if cli.sync.is_some() && (remote::is_remote(&left_spec) || remote::is_remote(&right_spec)) {
+    let left_text = left_spec.to_string_lossy().into_owned();
+    let right_text = right_spec.to_string_lossy().into_owned();
+    let auto_git_history = link::is_git_url(&left_text) && link::is_git_url(&right_text);
+    let git_history = cli.git_history || auto_git_history;
+    if !git_history && (link::is_git_url(&left_text) || link::is_git_url(&right_text)) {
+        anyhow::bail!(
+            "Git repository URLs require --git-history, or pass two .git URLs to enable it automatically"
+        );
+    }
+    if git_history
+        && (cli.apply_patch.is_some()
+            || cli.sync.is_some()
+            || cli.base.is_some()
+            || cli.external_tool.is_some()
+            || cli.pdf_visual)
+    {
+        anyhow::bail!(
+            "--git-history cannot be combined with patch, sync, merge, external-tool or PDF visual modes"
+        );
+    }
+    let linked_mode = remote::is_remote(&left_spec)
+        || remote::is_remote(&right_spec)
+        || (link::is_git_url(&left_text) && !left_text.starts_with("file://"))
+        || (link::is_git_url(&right_text) && !right_text.starts_with("file://"));
+    if cli.sync.is_some() && linked_mode {
         anyhow::bail!(
             "--sync supports local paths only; download or mount remote directories before syncing"
         );
@@ -470,7 +545,21 @@ fn run() -> Result<i32> {
         password: cli.remote_password.clone(),
         sftp_known_hosts: cli.sftp_known_hosts.clone(),
     };
-    let (left, left_display) = remote::resolve_input(&left_spec, remote_temp.path(), &remote_auth)?;
+    let download = link::DownloadConfig {
+        yes: cli.yes,
+        aria2: cli.aria2.as_deref(),
+        timeout: Duration::from_secs(cli.download_timeout),
+        user: remote_auth.user.as_deref(),
+        password: remote_auth.password.as_deref(),
+        progress: &progress,
+    };
+    let (left, left_display) = resolve_input(
+        &left_spec,
+        remote_temp.path(),
+        &remote_auth,
+        git_history,
+        download,
+    )?;
 
     if let Some(patch_path) = &cli.apply_patch {
         if cli.patch_output.is_some() || cli.sync.is_some() || cli.base.is_some() {
@@ -564,9 +653,50 @@ fn run() -> Result<i32> {
         }
         return Ok(0);
     }
-    let (right, right_display) =
-        remote::resolve_input(&right_spec, remote_temp.path(), &remote_auth)?;
+    let (right, right_display) = resolve_input(
+        &right_spec,
+        remote_temp.path(),
+        &remote_auth,
+        git_history,
+        download,
+    )?;
     let _remote_temp = remote_temp;
+
+    let auto_scan = linked_mode && !cli.security_scan && !cli.no_security_scan;
+    if auto_scan && !cli.quiet {
+        eprintln!("Kaspersky: scanning linked inputs by default (use --no-security-scan to skip)");
+    }
+    if cli.security_scan || auto_scan {
+        let outcome = security::scan_paths(
+            cli.kaspersky.as_deref(),
+            &[left.as_path(), right.as_path()],
+            Duration::from_secs(cli.scan_timeout),
+            Some(&progress),
+        );
+        progress.finish();
+        match outcome {
+            ScanOutcome::Clean => {
+                if !cli.quiet {
+                    eprintln!("Kaspersky: no threats detected");
+                }
+            }
+            ScanOutcome::Unavailable(message) => {
+                if !cli.quiet {
+                    eprintln!("warning: {message}");
+                }
+            }
+            ScanOutcome::Failed(message) => {
+                anyhow::bail!("Kaspersky scan failed: {message}");
+            }
+            ScanOutcome::Threats(threats) => {
+                eprintln!("Kaspersky detected {} threat(s):", threats.len());
+                for threat in &threats {
+                    eprintln!("  {threat}");
+                }
+                return Ok(2);
+            }
+        }
+    }
 
     if let Some(tool) = &cli.external_tool {
         if cli.patch_output.is_some()
@@ -880,54 +1010,31 @@ fn run() -> Result<i32> {
         return Ok(if report.has_changes() { 1 } else { 0 });
     }
 
-    let progress =
-        if cli.quiet || cli.no_progress || (!cli.progress && !std::io::stderr().is_terminal()) {
-            ProgressHandle::disabled()
-        } else {
-            ProgressHandle::new(true)
-        };
-    if cli.security_scan {
-        let outcome = security::scan_paths(
-            cli.kaspersky.as_deref(),
-            &[left.as_path(), right.as_path()],
-            Duration::from_secs(cli.scan_timeout),
-            Some(&progress),
-        );
-        progress.finish();
-        match outcome {
-            ScanOutcome::Clean => {
-                if !cli.quiet {
-                    eprintln!("Kaspersky: no threats detected");
-                }
-            }
-            ScanOutcome::Unavailable(message) => {
-                if !cli.quiet {
-                    eprintln!("warning: {message}");
-                }
-            }
-            ScanOutcome::Failed(message) => {
-                anyhow::bail!("Kaspersky scan failed: {message}");
-            }
-            ScanOutcome::Threats(threats) => {
-                eprintln!("Kaspersky detected {} threat(s):", threats.len());
-                for threat in &threats {
-                    eprintln!("  {threat}");
-                }
-                return Ok(2);
-            }
-        }
-    }
-
-    let engine = DiffEngine::new(options).with_progress(progress);
-    let mut report = engine.compare(&left, &right).with_context(|| {
-        format!(
-            "failed to compare {} and {}",
-            left.display(),
-            right.display()
+    progress.finish();
+    progress.reset();
+    let mut report = if git_history {
+        link::history_report(
+            &left,
+            &right,
+            &left_display,
+            &right_display,
+            options.max_json_changes,
+            &progress,
         )
-    })?;
-    report.left.path = left_display;
-    report.right.path = right_display;
+        .context("failed to compare Git histories")?
+    } else {
+        let engine = DiffEngine::new(options).with_progress(progress.clone());
+        let mut report = engine.compare(&left, &right).with_context(|| {
+            format!(
+                "failed to compare {} and {}",
+                left.display(),
+                right.display()
+            )
+        })?;
+        report.left.path = left_display;
+        report.right.path = right_display;
+        report
+    };
 
     if (cli.image_heatmap.is_some() || cli.image_side_by_side.is_some())
         && (report.left.kind != FileKind::Image || report.right.kind != FileKind::Image)

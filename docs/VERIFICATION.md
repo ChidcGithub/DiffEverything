@@ -8,32 +8,45 @@
 
 ## Release Verification (v1.0-4596984fe5db)
 
-On 2026-11-27 13:27 CST, the local verification run passed fmt check, clippy, 279 tests, the release build and 189 smoke tests in sequence. Later commits add DEX, serialization, package, document and media tests, parallel comparison, progress, Kaspersky scanning and a DEX performance fix; the current workspace test count is 316.
+On 2026-11-27 13:27 CST, the local verification run passed fmt check, clippy, 279 tests, the release build and 189 smoke tests in sequence. Later commits add DEX, serialization, package, document and media tests, parallel comparison, progress, Kaspersky scanning, linked HTTP(S) downloads with embedded aria2, Git repository history comparison and a DEX performance fix; the current workspace test count is 325.
 
 Final release artifact: `target/release/diff-everything.exe`, 50,950,656 bytes (48.59 MiB), SHA-256 `5B4CA0427B707BB9B384D7FC3ABA4E748FBBD981D3CAA531EB35E4B9EBA48E7D`.
 
 ## Extended Format Verification
 
-On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 316 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
+On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 325 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
+
+## Linked Input Verification
+
+The linked-input tests use local `tiny_http` servers and real temporary Git repositories:
+
+- `linked_download_over_100_mib_requires_yes` serves a 101 MiB `Content-Length` and confirms a non-interactive run without `-y` exits with code 2 before downloading.
+- `linked_inputs_scan_with_kaspersky_by_default` compares two HTTP links without `--security-scan` and verifies that the mock Kaspersky scanner is invoked automatically; a second run with `--no-security-scan` verifies the opt-out.
+- `git_history_compares_commits_with_concise_and_full_detail` creates two repositories with different commit histories and verifies concise truncation (4 changes) versus full detail (more than 4 changes), plus `git-history` report type and structured-change counts.
+- `git_history_clones_url_inputs` passes `file://` repository URLs, exercises the bare-mirror clone path, and verifies that the original URLs are retained in the report.
+- Unit tests cover Git/HTTP URL recognition, safe download file names (traversal and Windows reserved names), `Content-Range` size probing, and the `-y` override for the 100 MiB guard.
+
+Manual release verification on Windows also downloaded two HTTP files with the embedded aria2 1.37.0 binary and compared them successfully. The embedded executable was extracted to `%TEMP%\diff-everything-tools\aria2c-1.37.0-<pid>.exe` with the expected 5,649,408-byte size. A release build comparison of the same repository history through `file://` URLs reported `2 -> 7 commit(s)`.
 
 ## Test Results
 
 ```text
 cargo test --workspace
-5 CLI binary unit tests
-58 CLI tests
-132 diff-core unit tests
-6 engine integration tests
+10 CLI binary unit tests
+65 CLI tests
+144 diff-core unit tests
+7 engine integration tests
+21 extended format integration tests
 58 format integration tests
 15 robustness tests
 3 folder merge integration tests
 2 folder patch integration tests
-= 279 tests, all passing
+= 325 tests, all passing
 ```
 
 ```text
 cargo test --workspace --release
-(279 tests, all passing)
+(325 tests, all passing)
 ```
 
 ```text

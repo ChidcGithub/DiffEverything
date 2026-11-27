@@ -109,6 +109,19 @@ impl ProgressHandle {
         let _ = write!(stderr, "\r{}\r", " ".repeat(100));
         let _ = stderr.flush();
     }
+
+    /// Clear counters and the label before a new phase (for example downloads
+    /// followed by comparison). The handle stays enabled.
+    pub fn reset(&self) {
+        if !self.enabled() {
+            return;
+        }
+        self.inner.total.store(0, Ordering::Relaxed);
+        self.inner.current.store(0, Ordering::Relaxed);
+        if let Ok(mut label) = self.inner.label.lock() {
+            label.clear();
+        }
+    }
 }
 
 fn render(handle: &ProgressHandle, force: bool) {

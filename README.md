@@ -31,6 +31,7 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 | Merge | Text / notebooks / directories | Three-way merge; clean or conflict exit codes; directory output to a new directory |
 | Reports | — | ANSI, interactive TUI, JSON, Markdown, self-contained HTML, unified diff |
 | Workflow | — | Exit codes, `--name-only`, `--quiet`, `--summary-only`, streaming fallback for large files, directory sync, session save/load, external comparator delegation, parallel directory/archive comparison (`--jobs`), terminal progress, optional Kaspersky security scan |
+| Linked input | HTTP(S) files, Git repository URLs | Download with embedded aria2 (100 MiB confirmation guard, `-y`), compare locally; `--git-history` compares refs, HEAD and commit metadata (up to 2,000 commits); Kaspersky scan runs by default for linked inputs |
 | Remote input | WebDAV / HTTP(S) / SFTP / SMB | Download files or recursive directories, then compare locally; URL credentials or `--remote-user` / `--remote-password` |
 
 ## Quick Start
@@ -145,6 +146,15 @@ Common examples:
 .\target\release\diff-everything.exe old new --security-scan
 .\target\release\diff-everything.exe old new --security-scan --kaspersky "C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.27\avp.com"
 
+# Linked files: aria2-backed download, automatic Kaspersky scan, 100 MiB guard
+.\target\release\diff-everything.exe https://host/old.zip https://host/new.zip
+.\target\release\diff-everything.exe https://host/large-old.bin https://host/large-new.bin -y
+.\target\release\diff-everything.exe https://host/old.bin https://host/new.bin --no-security-scan --aria2 C:\tools\aria2c.exe
+
+# Git repository histories (two .git URLs enable this automatically)
+.\target\release\diff-everything.exe https://host/owner/old.git https://host/owner/new.git
+.\target\release\diff-everything.exe ..\repo old\repo --git-history --detail full
+
 # Remote input
 .\target\release\diff-everything.exe webdav://user:pass@host/old.txt https://host/new.txt
 .\target\release\diff-everything.exe sftp://user:pass@host:22/old.txt sftp://user:pass@host:22/new.txt
@@ -156,7 +166,8 @@ Common examples:
 | Option | Description |
 |---|---|
 | **Input and comparison** | |
-| `<LEFT>` `<RIGHT>` | Two files or directories; WebDAV / HTTP(S) / SFTP / SMB URLs are also accepted |
+| `<LEFT>` `<RIGHT>` | Two files or directories; HTTP(S) file links, Git repository URLs, and WebDAV / SFTP / SMB URLs are also accepted |
+| `--git-history` | Compare the refs, HEAD and commit metadata of two Git repositories or repository URLs (auto-enabled for two `.git` URLs) |
 | `--format <ansi\|tui\|json\|markdown\|html\|unified>` | Output format |
 | `--mode <text\|token\|tree\|graph>` | Line text / tree-sitter tokens / full syntax tree / syntax-event graph |
 | `--context <N>` | Context lines for text (default 3) |
@@ -175,8 +186,11 @@ Common examples:
 | `--progress` / `--no-progress` | Force/hide progress on stderr; auto when stderr is a terminal |
 | **Performance** | |
 | `--jobs <N>` | Worker threads for directory/archive entries; default 4, `0` = all cores, `1` = sequential |
+| `--aria2 <FILE>` | aria2c executable for linked files; Windows uses the embedded build, other platforms use `aria2c` from PATH, then the built-in HTTP client |
+| `--download-timeout <SECONDS>` | Timeout for linked downloads and Git clones, default 600 |
 | **Security** | |
 | `--security-scan` | Scan both inputs with installed Kaspersky before comparing |
+| `--no-security-scan` | Skip the automatic Kaspersky scan for linked inputs |
 | `--kaspersky <FILE>` | Kaspersky `avp.com` path; auto-detected when omitted |
 | `--scan-timeout <SECONDS>` | Kaspersky scan timeout, default 300 |
 | **Resource and recursion limits** | |
@@ -202,7 +216,7 @@ Common examples:
 | `--pdf-visual` / `--pdftoppm <FILE>` / `--pdf-dpi <N>` / `--pdf-max-pages <N>` / `--pdf-output-dir <DIR>` | Rendered PDF visual diff |
 | `--ocr` / `--tesseract <FILE>` / `--tessdata <DIR>` / `--ocr-language <LANG>` | Image/PDF OCR and tool configuration |
 | **Decompilation and external tools** | |
-| `-y, --yes` | Accept decompilation prompts in full mode |
+| `-y, --yes` | Accept decompilation and large-download (>100 MiB) prompts |
 | `--objdump <FILE>` | Optional external llvm-objdump/objdump; embedded pure-Rust disassemblers are the default |
 | `--external-tool <PROGRAM>` / `--external-arg <ARG>` | Delegate comparison to an external program; LEFT/RIGHT are appended |
 
@@ -247,7 +261,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 316 Rust tests (unit + integration + CLI)
+# 325 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -257,19 +271,32 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The release was also validated with 189 end-to-end smoke tests and real external fixtures. Maintainer fixture, smoke-test and release scripts are kept local and are not part of the public repository.
 
-Coverage includes every leaf format and key path/cell/line assertions, invalid-input fallbacks, UTF-16 and large-file paths, archive limits, CLI exit codes and report validity, image reports, three-way merges, bsdiff and HDIFF13/HDIFF19 patches, syntax-tree diff, sync/session flows, notebook merges, remote inputs, OCR/PDF visual reports, OpenAPI breaking changes, external comparators, and real downloaded PDF/Office/archive fixtures. Full results are in [docs/VERIFICATION.md](docs/VERIFICATION.md).
+Coverage includes every leaf format and key path/cell/line assertions, invalid-input fallbacks, UTF-16 and large-file paths, archive limits, CLI exit codes and report validity, image reports, three-way merges, bsdiff and HDIFF13/HDIFF19 patches, syntax-tree diff, sync/session flows, notebook merges, remote and linked inputs, Git-history comparison, OCR/PDF visual reports, OpenAPI breaking changes, external comparators, and real downloaded PDF/Office/archive fixtures. Full results are in [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 ## Parallelism, Progress and Security
 
 - Directory and archive entries are compared in parallel with rayon. `--jobs` defaults to `4`, `--jobs 0` uses all cores, `--jobs 1` is sequential, and larger values cap workers. Results are collected in path order, so reports remain deterministic.
 - Progress is written to stderr, never to the report. It is enabled automatically when stderr is a terminal; `--progress` forces it and `--no-progress` (or `--quiet`) disables it.
 - `--security-scan` uses only Kaspersky's local `avp.com` interface. Common installation paths are auto-detected; `--kaspersky <FILE>` overrides detection. Scans use `/i0` (report only), so files are never disinfected or deleted. Detected threats abort with exit code `2`; a missing Kaspersky installation or stopped service produces a warning and the diff continues. `--scan-timeout` bounds each scan.
+- Linked inputs (HTTP(S) files and Git repository URLs) are scanned automatically with the same local Kaspersky interface. `--no-security-scan` disables this default; `--security-scan` still enables it manually for any comparison.
+
+## Linked Files and Git History
+
+- Any HTTP(S) URL can be used as LEFT or RIGHT. Files are downloaded into a temporary directory and compared locally; report paths keep the original URL.
+- Windows builds embed aria2 1.37.0 and extract it to the temporary directory on first use. Other platforms use `aria2c` from PATH; if it is unavailable, the built-in HTTP client is used. `--aria2 <FILE>` selects a specific aria2c.
+- A download whose declared size exceeds 100 MiB prints a warning and asks for confirmation. `-y` / `--yes` skips the prompt; non-interactive runs without `-y` stop with an error. `--download-timeout` bounds each download and clone.
+- `--git-history` compares repository refs, HEAD, commit count and commit metadata (SHA, author, email, date, subject). Up to 2,000 commits are included per side; older history is summarized in a warning.
+- Remote Git repositories are cloned as bare mirrors into the temporary directory. The clone first requests a blob-filtered mirror and retries a full mirror when the server does not support partial clones.
+- Two `.git` URLs (HTTP(S), `file://`, `git://`, `ssh://` or `git@host:path`) enable Git-history mode automatically. One repository URL mixed with a local path requires `--git-history`.
+- Linked inputs run the Kaspersky scan by default. Use `--no-security-scan` for an offline or non-Windows environment that has no Kaspersky installation.
 
 ## Limitations
 
 - PDF uses the text layer by default; `--pdf-visual` requires poppler `pdftoppm`, and `--ocr` requires Tesseract. Portable builds can be installed separately.
 - PDF visual output includes `report.pdf` (side-by-side + heatmap), `report-overlay.pdf` (raster red overlay), `report-vector.pdf` (vector rectangles appended to page content), plus HTML/PNG; `report.html` embeds base64 PNGs and is self-contained.
 - WebDAV / HTTP(S) / SFTP / SMB support file input; WebDAV / SFTP / SMB support recursive directories.
+- aria2 is embedded only in Windows builds. Linux and macOS use `aria2c` from PATH when present and otherwise fall back to the built-in HTTP downloader.
+- Git history requires `git` on PATH. Remote histories are capped at 2,000 commits per side, and refs/commit metadata are compared rather than every commit patch.
 - RPM supports gzip/xz/zstd payloads; ZIP supports bzip2, LZMA (method 14) and zstd entries.
 - `--sync` only applies to local directories; remote inputs are rejected to avoid modifying temporary copies.
 - `--external-tool` receives resolved local paths; remote inputs are downloaded to a temporary directory first.
@@ -280,4 +307,4 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 
 ## License
 
-MIT. See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the project license and third-party notices. Reference projects were used to study algorithms and design; GPL/LGPL code from diffoscope, diff-pdf, Graphtage and others was not copied.
+MIT. See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the project license and third-party notices. The Windows build bundles the unmodified GPL-2.0-or-later aria2 1.37.0 executable and invokes it as a separate process; its GPL text, OpenSSL notice and authors are reproduced under `crates/diff-cli/assets/` and in `THIRD_PARTY_LICENSES.md`. Reference projects were used to study algorithms and design; GPL/LGPL code from diffoscope, diff-pdf, Graphtage and others was not copied.

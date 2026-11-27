@@ -39,10 +39,12 @@ crates/
 │  │  ├─ markdown.rs         Markdown report
 │  │  ├─ html.rs             self-contained HTML report
 │  │  └─ unified.rs          GNU unified diff
-│  └─ tui.rs                 ratatui interactive viewer
 │  └─ tests/                 engine / formats / robustness
 └─ diff-cli/
    ├─ src/main.rs            argument parsing, exit codes, merge/patch/image branches
+   ├─ src/link.rs            aria2/built-in HTTP downloads, 100 MiB guard, Git history
+   ├─ src/remote.rs          WebDAV / SFTP / SMB remote inputs
+   ├─ src/tui.rs             interactive ANSI viewer
    └─ tests/cli.rs           CLI end-to-end tests
 ```
 
@@ -168,13 +170,17 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - `--ocr` calls Tesseract for images. For PDFs, pages are rendered with `pdftoppm`, OCR'd page by page, then compared as text.
 - Tool paths can be set with `--tesseract` / `--pdftoppm` / environment variables; portable builds can be installed separately.
 
-## Remote Input
+## Remote and Linked Input
 
-- `webdav://` / `webdavs://` map to HTTP(S); `http(s)://` uses GET; `sftp://` reads through ssh2.
-- Authentication comes from URL user info or `--remote-user` / `--remote-password`.
+- Plain `http(s)://` file URLs use the linked-input path in `diff-cli/src/link.rs`: HEAD is used to read `Content-Length`, aria2 performs the download when available, and a built-in streaming HTTP client is the fallback.
+- Windows releases embed aria2 1.37.0 (`crates/diff-cli/assets/aria2c.exe`) and extract it to `%TEMP%\diff-everything-tools` with a per-process filename. `--aria2 <FILE>` overrides it; other platforms use `aria2c` from PATH.
+- Downloads above 100 MiB require confirmation. `-y` accepts the prompt; non-interactive runs without `-y` fail before writing the file. `--download-timeout` bounds downloads and clones.
+- `--git-history` treats both inputs as Git repositories. Remote URLs are cloned as bare mirrors with `--filter=blob:none`, then retried as a full mirror. The report compares refs, HEAD, commit count and commit metadata for the most recent 2,000 commits per side.
+- `webdav://` / `webdavs://` map to HTTP(S) and use the WebDAV listing path; `sftp://` reads through ssh2 and `smb://` through smb2.
+- Authentication comes from URL user info or `--remote-user` / `--remote-password` for both linked HTTP files and the other remote schemes.
 - Files are downloaded into `tempfile::TempDir`, kept alive during comparison, and removed afterward.
 - Report paths keep the original URL; sessions store the original URL.
-- Tests use local tiny_http WebDAV/HTTP, asyncssh SFTP and impacket SMB test servers when those maintainer-local helpers are available.
+- Tests use local tiny_http WebDAV/HTTP, file-URL Git clones, asyncssh SFTP and impacket SMB test servers when those maintainer-local helpers are available.
 
 ## Directory Sync and Sessions
 
@@ -207,6 +213,7 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - `--jobs` defaults to 4; `--jobs 0` uses the rayon global pool, `--jobs 1` runs sequentially, and larger values build a bounded local thread pool.
 - `ProgressHandle` is a thread-safe stderr sink. It reports entry counts and accepts messages from the engine and Kaspersky scanner; `--progress` forces it, `--no-progress`/`--quiet` disable it.
 - Kaspersky integration auto-detects `avp.com` under common installation paths, checks the `AVP*` service state, and runs `SCAN ... /i0 /R:<temp-report>`. `/i0` is report-only: no disinfection or deletion. Threats abort with exit code `2`; a missing installation or stopped service is a warning. Reports are decoded from UTF-8/UTF-16 and parsed for detection lines.
+- Linked inputs (HTTP(S) files and Git repositories) run the Kaspersky scan by default after download/clone. `--no-security-scan` skips it; `--security-scan` forces a scan for local comparisons.
 
 ## Performance and Safety Boundaries
 

@@ -145,7 +145,7 @@ DiffEverything mapping:
 - `--ignore-whitespace`, `--ignore-case`, `--ignore-comments`, `--exclude`;
 - `--format html`, `--detail concise|full`, `-y`/`--objdump` decompilation authorization, `--head` / `--last` / `--filter`, `--name-only`, `--quiet`, `--summary-only`.
 
-Directory sync (plan/apply/backup), session save/load and WebDAV/SFTP/SMB remote files are implemented.
+Directory sync (plan/apply/backup), session save/load, WebDAV/SFTP/SMB remote files, aria2-backed HTTP(S) linked files and Git repository history comparison are implemented.
 
 ### uni-diff (document formats and output)
 
@@ -220,15 +220,19 @@ Read: `references/gocompare/README.md`, `references/doc-diff-software/README.md`
 
 Borrowed: a unified entry point for directories/tables/images/documents, and a safe "show differences first, then apply" workflow.
 
-DiffEverything mapping: local directories, tables, images, documents, audio tags/properties, OFD, three-way merge, directory sync, WebDAV/HTTP(S)/SFTP/SMB remote files, and WebDAV/SFTP/SMB recursive directories.
+DiffEverything mapping: local directories, tables, images, documents, audio tags/properties, OFD, three-way merge, directory sync, WebDAV/HTTP(S)/SFTP/SMB remote files, WebDAV/SFTP/SMB recursive directories, aria2-backed linked files and Git repository history comparison.
 
 Registry export `.reg` files are compared as text; OCR is implemented for images and rendered scanned-PDF pages.
 
+## Bundled Tools
+
+The Windows build bundles aria2 1.37.0 (`crates/diff-cli/assets/aria2c.exe`) for linked HTTP(S) downloads. It is the unmodified official 64-bit build from https://github.com/aria2/aria2/releases/tag/release-1.37.0, is invoked as a separate process, and is distributed under GPL-2.0-or-later. The GPL text, OpenSSL notice and authors file are next to the executable and reproduced in [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md#bundled-binaries).
+
 ## Test Comparison
 
-- `cargo test --workspace`: 316 tests;
+- `cargo test --workspace`: 325 tests;
 - maintainer-local smoke-test suite: 189 end-to-end cases;
 - maintainer-local fixture download script: downloads real test files from W3C, Mozilla, python-docx, calamine, plotly, Kubernetes, w3schools, jsonplaceholder, picsum, GNU, Debian, Arch Linux, Fedora, CentOS and Open Diff;
 - `testdata/external/MANIFEST.csv`: URL, SHA-256, size.
 
-Third-party projects are used for research and feature comparison only. Reusing their code directly would require complying with the corresponding license and cannot be merged into MIT-licensed code without permission.
+Third-party reference projects are used for research and feature comparison only. Reusing their code directly would require complying with the corresponding license and cannot be merged into MIT-licensed code without permission. The only third-party executable distributed with DiffEverything is the separate, unmodified aria2 binary described under Bundled Tools.
