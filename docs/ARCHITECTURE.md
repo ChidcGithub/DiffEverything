@@ -229,7 +229,7 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - Directories build a file table before comparison for statistics and truncation.
 - ZIP/TAR entries are read in memory with per-entry limits to avoid zip bombs.
 - Symbolic links are not followed.
-- All limits are exposed through `DiffOptions`.
+- All limits are exposed through `DiffOptions`. `--max-file-bytes` overrides the 64 MiB per-file detailed-diff limit; `--no-file-size-limit` sets `UNLIMITED_FILE_BYTES` (`u64::MAX / 2`) so the same code paths keep overflow-safe `limit + 1` reads while allowing arbitrarily large real files.
 - The release profile enables fat LTO, one codegen unit, `opt-level = 3` and symbol stripping. The embedded Windows aria2 binary is zstd-compressed and decompressed on first use.
 - Directory/archive workers share an `Arc<GlobSet>` exclusion matcher, merge sorted keys in linear time, and avoid per-entry key clones and progress formatting when progress is disabled.
 - Both workspace crates forbid `unsafe` code. ANSI output sanitizes untrusted control characters, the TUI has an RAII terminal cleanup guard, and Kaspersky report reads are capped at 4 MiB.

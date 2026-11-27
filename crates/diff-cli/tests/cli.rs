@@ -1558,6 +1558,61 @@ fn rich_style_adds_banner_rules_and_line_numbers() {
 }
 
 #[test]
+fn no_file_size_limit_disables_detailed_diff_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let left = dir.path().join("left.txt");
+    let right = dir.path().join("right.txt");
+    std::fs::write(&left, format!("alpha\n{}\n", "x".repeat(100))).unwrap();
+    std::fs::write(&right, format!("beta\n{}\n", "y".repeat(100))).unwrap();
+
+    let limited = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--max-file-bytes",
+        "1",
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_eq!(limited.status.code(), Some(1), "{}", stderr(&limited));
+    let limited_text = stdout(&limited);
+    assert!(limited_text.contains("detail truncated"), "{limited_text}");
+    assert!(
+        limited_text.contains("detailed-diff limit"),
+        "{limited_text}"
+    );
+    assert!(!limited_text.contains("@@ "), "{limited_text}");
+
+    let unlimited = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--no-file-size-limit",
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_eq!(unlimited.status.code(), Some(1), "{}", stderr(&unlimited));
+    assert!(stdout(&unlimited).contains("@@ "), "{}", stdout(&unlimited));
+    assert!(
+        stderr(&unlimited).contains("per-file size limit disabled"),
+        "{}",
+        stderr(&unlimited)
+    );
+
+    let conflict = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--no-file-size-limit",
+        "--max-file-bytes",
+        "1024",
+    ]);
+    assert_eq!(conflict.status.code(), Some(2), "{}", stderr(&conflict));
+    assert!(
+        stderr(&conflict).contains("cannot be used with"),
+        "{}",
+        stderr(&conflict)
+    );
+}
+
+#[test]
 fn ansi_output_sanitizes_control_characters() {
     let dir = tempfile::tempdir().unwrap();
     let left = dir.path().join("left.txt");

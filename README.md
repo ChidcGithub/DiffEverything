@@ -94,6 +94,10 @@ Common examples:
 .\target\release\diff-everything.exe old.txt new.txt --style rich
 .\target\release\diff-everything.exe old.txt new.txt --style plain
 
+# Override or remove the per-file detailed-diff limit (default 64 MiB)
+.\target\release\diff-everything.exe old.iso new.iso --max-file-bytes 536870912
+.\target\release\diff-everything.exe old.iso new.iso --no-file-size-limit
+
 # Head / tail / filter
 .\target\release\diff-everything.exe old.txt new.txt --head 20
 .\target\release\diff-everything.exe old.txt new.txt --last 20
@@ -219,7 +223,8 @@ Features:   linked files, Git history, aria2, Kaspersky, rich terminal UI
 | `--scan-timeout <SECONDS>` | Kaspersky scan timeout, default 300 |
 | **Resource and recursion limits** | |
 | `--max-rows <N>` / `--max-table-rows <N>` / `--max-workbook-cells <N>` | Detail rows, table rows and workbook cell limits |
-| `--max-file-bytes <N>` / `--max-entries <N>` | Single-file byte limit / directory and archive entry limit |
+| `--max-file-bytes <BYTES>` / `--no-file-size-limit` | Override or remove the 64 MiB per-file detailed-diff limit; removing it may exhaust memory |
+| `--max-entries <N>` | Directory and archive entry limit |
 | `--max-depth <N>` | Recursive directory/archive depth limit, default 32 (1..1024) |
 | **Merge and sync** | |
 | `--base <FILE\|DIR>` | Three-way merge base (a directory base enables directory merge) |
@@ -285,7 +290,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 330 Rust tests (unit + integration + CLI)
+# 331 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -356,7 +361,7 @@ elapsed  7 ms
 - `--external-tool` receives resolved local paths; remote inputs are downloaded to a temporary directory first.
 - SFTP does not verify host fingerprints by default. Use `--sftp-known-hosts <FILE>` in production; missing or mismatched keys are rejected.
 - Legacy `.doc` / `.ppt` fall back to binary; `.xls` / `.ods` are supported by calamine.
-- Default limits are 64 MiB per file, 10,000 directory entries and 2,000 archive entries; all are configurable.
+- Default limits are 64 MiB per file, 10,000 directory entries and 2,000 archive entries; all are configurable. `--no-file-size-limit` removes the per-file detailed-diff limit and can consume a lot of memory on huge inputs.
 - Encrypted ZIPs and archives with unsupported compression fall back to binary with a warning.
 
 ## License

@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use clap::builder::styling::{AnsiColor, Styles};
 use clap::{Parser, ValueEnum};
-use diff_core::engine::DiffMode;
+use diff_core::engine::{DiffMode, UNLIMITED_FILE_BYTES};
 use diff_core::model::TOOL_VERSION;
 use diff_core::progress::ProgressHandle;
 use diff_core::render::{self, RenderOptions};
@@ -225,9 +225,13 @@ struct Cli {
     )]
     max_workbook_cells: usize,
 
-    /// Maximum bytes per file for detailed diffing
+    /// Maximum bytes per file for detailed diffing (overrides the 64 MiB default)
     #[arg(help_heading = "Limits", long, value_name = "BYTES")]
     max_file_bytes: Option<u64>,
+
+    /// Remove the per-file detailed-diff size limit (may exhaust memory)
+    #[arg(help_heading = "Limits", long, conflicts_with = "max_file_bytes")]
+    no_file_size_limit: bool,
 
     /// Maximum entries in a directory or archive
     #[arg(help_heading = "Limits", long, value_name = "N")]
@@ -598,6 +602,13 @@ fn run() -> Result<i32> {
     };
     if let Some(max_file_bytes) = cli.max_file_bytes {
         options.max_file_bytes = max_file_bytes;
+    } else if cli.no_file_size_limit {
+        options.max_file_bytes = UNLIMITED_FILE_BYTES;
+        if !cli.quiet {
+            eprintln!(
+                "warning: per-file size limit disabled; very large inputs may exhaust memory"
+            );
+        }
     }
     options.max_depth = cli.max_depth;
     if let Some(max_entries) = cli.max_entries {

@@ -50,6 +50,10 @@ impl Default for DecompileOptions {
     }
 }
 
+/// Sentinel used when the caller explicitly disables the per-file size limit.
+/// It stays well below `u64::MAX` so internal `limit + 1` reads cannot overflow.
+pub const UNLIMITED_FILE_BYTES: u64 = u64::MAX / 2;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DiffOptions {
     pub context: usize,
