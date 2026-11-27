@@ -8,9 +8,9 @@
 
 ## 最近一次验证
 
-2026-11-27 13:17 CST，`scripts/verify-all.ps1` 依次通过 fmt check、clippy、278 项测试、release 构建和 189 项 smoke。
+2026-11-27 13:27 CST，`scripts/verify-all.ps1` 依次通过 fmt check、clippy、279 项测试、release 构建和 189 项 smoke。
 
-最终 release 产物：`target/release/diff-everything.exe`，50,940,928 bytes（48.58 MiB），SHA-256 `D0346ADB3A13073544741200514C9DED8429C2C3D22EE77E3FFC434C578CBDA1`。
+最终 release 产物：`target/release/diff-everything.exe`，50,950,656 bytes（48.59 MiB），SHA-256 `5B4CA0427B707BB9B384D7FC3ABA4E748FBBD981D3CAA531EB35E4B9EBA48E7D`。
 
 
 
