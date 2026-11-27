@@ -10,9 +10,9 @@
 
 On 2026-11-27, the `1.0.1 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 331 debug tests, 331 release tests, the release build and 189 smoke tests. The short display version is now the semantic package version plus the release codename; `--version` additionally reports the build commit, profile, target and toolchain metadata.
 
-Final release artifact: `target/release/diff-everything.exe`, 55,503,360 bytes (52.93 MiB), SHA-256 `FD1FBB69826371BDD732811D4D5D192D877ED863EFEFEB53E90A0835EC4A6587`. The binary was built from code commit `4ade768ff49c`; `--version` reports that commit together with the profile, target, rustc version, license, repository and feature list.
+Final release artifact: `target/release/diff-everything.exe`, 55,506,944 bytes (52.94 MiB), SHA-256 `036641F3A71E297CB22989E26C748A2CB2F28B577DCA56D6DC9C71D20FF7E230`. The binary was built from code commit `474092f6357f`; `--version` reports that commit together with the profile, target, rustc version, license, repository and feature list.
 
-The release profile (fat LTO, one codegen unit, symbol stripping) and the zstd-compressed aria2 asset reduced the executable from 62,518,272 bytes to 55,503,360 bytes, an 11.2% reduction, while the parallel entry comparison was deduplicated and allocation-heavy paths were removed.
+The release profile (fat LTO, one codegen unit, symbol stripping) and the zstd-compressed aria2 asset reduced the executable from 62,518,272 bytes to 55,506,944 bytes, an 11.2% reduction, while the parallel entry comparison was deduplicated and allocation-heavy paths were removed.
 
 Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md` (including the bundled aria2 GPLv2/OpenSSL notices and all Rust crate licenses).
 
