@@ -1,11 +1,14 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use diff_core::engine::DiffMode;
+use diff_core::progress::ProgressHandle;
 use diff_core::render::{self, RenderOptions};
+use diff_core::security::{self, ScanOutcome};
 use diff_core::{DiffEngine, DiffOptions, DiffStatus, FileKind};
 use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 mod remote;
 mod tui;
@@ -261,6 +264,40 @@ struct Cli {
     /// Maximum recursive archive/directory depth
     #[arg(long, default_value_t = 32, value_name = "N", help_heading = "Limits")]
     max_depth: usize,
+
+    /// Hide progress output (progress is shown on stderr in interactive terminals)
+    #[arg(help_heading = "Output", long)]
+    no_progress: bool,
+
+    /// Force progress output even when stderr is not a terminal
+    #[arg(help_heading = "Output", long, conflicts_with = "no_progress")]
+    progress: bool,
+
+    /// Worker threads for directory/archive comparison (0 = all cores, 1 = sequential)
+    #[arg(
+        help_heading = "Performance",
+        long,
+        default_value_t = 0,
+        value_name = "N"
+    )]
+    jobs: usize,
+
+    /// Scan both inputs with installed Kaspersky before comparing
+    #[arg(help_heading = "Security", long)]
+    security_scan: bool,
+
+    /// Path to Kaspersky avp.com; auto-detected when omitted
+    #[arg(help_heading = "Security", long, value_name = "FILE")]
+    kaspersky: Option<PathBuf>,
+
+    /// Kaspersky scan timeout in seconds
+    #[arg(
+        help_heading = "Security",
+        long,
+        default_value_t = 300,
+        value_name = "SECONDS"
+    )]
+    scan_timeout: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -344,6 +381,12 @@ fn run() -> Result<i32> {
     if !(1..=1_024).contains(&cli.max_depth) {
         anyhow::bail!("--max-depth must be between 1 and 1024");
     }
+    if cli.jobs > 1_024 {
+        anyhow::bail!("--jobs must be between 0 and 1024");
+    }
+    if cli.scan_timeout == 0 {
+        anyhow::bail!("--scan-timeout must be at least 1 second");
+    }
     let content_filter = if cli.head.is_some() || cli.last.is_some() || !cli.filter.is_empty() {
         Some(
             diff_core::filter::ContentFilter::new(cli.head, cli.last, &cli.filter, cli.context)
@@ -375,6 +418,7 @@ fn run() -> Result<i32> {
         ignore_whitespace: cli.ignore_whitespace,
         ignore_case: cli.ignore_case,
         image_threshold: cli.image_threshold,
+        jobs: cli.jobs,
         ..DiffOptions::default()
     };
     if let Some(max_file_bytes) = cli.max_file_bytes {
@@ -836,7 +880,45 @@ fn run() -> Result<i32> {
         return Ok(if report.has_changes() { 1 } else { 0 });
     }
 
-    let engine = DiffEngine::new(options);
+    let progress =
+        if cli.quiet || cli.no_progress || (!cli.progress && !std::io::stderr().is_terminal()) {
+            ProgressHandle::disabled()
+        } else {
+            ProgressHandle::new(true)
+        };
+    if cli.security_scan {
+        let outcome = security::scan_paths(
+            cli.kaspersky.as_deref(),
+            &[left.as_path(), right.as_path()],
+            Duration::from_secs(cli.scan_timeout),
+            Some(&progress),
+        );
+        progress.finish();
+        match outcome {
+            ScanOutcome::Clean => {
+                if !cli.quiet {
+                    eprintln!("Kaspersky: no threats detected");
+                }
+            }
+            ScanOutcome::Unavailable(message) => {
+                if !cli.quiet {
+                    eprintln!("warning: {message}");
+                }
+            }
+            ScanOutcome::Failed(message) => {
+                anyhow::bail!("Kaspersky scan failed: {message}");
+            }
+            ScanOutcome::Threats(threats) => {
+                eprintln!("Kaspersky detected {} threat(s):", threats.len());
+                for threat in &threats {
+                    eprintln!("  {threat}");
+                }
+                return Ok(2);
+            }
+        }
+    }
+
+    let engine = DiffEngine::new(options).with_progress(progress);
     let mut report = engine.compare(&left, &right).with_context(|| {
         format!(
             "failed to compare {} and {}",

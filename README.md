@@ -30,7 +30,7 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 | Notebooks | `.ipynb` | Cell-level diff, global cell-id alignment, output/execution-count changes, three-way cell merge |
 | Merge | Text / notebooks / directories | Three-way merge; clean or conflict exit codes; directory output to a new directory |
 | Reports | — | ANSI, interactive TUI, JSON, Markdown, self-contained HTML, unified diff |
-| Workflow | — | Exit codes, `--name-only`, `--quiet`, `--summary-only`, streaming fallback for large files, directory sync, session save/load, external comparator delegation |
+| Workflow | — | Exit codes, `--name-only`, `--quiet`, `--summary-only`, streaming fallback for large files, directory sync, session save/load, external comparator delegation, parallel directory/archive comparison (`--jobs`), terminal progress, optional Kaspersky security scan |
 | Remote input | WebDAV / HTTP(S) / SFTP / SMB | Download files or recursive directories, then compare locally; URL credentials or `--remote-user` / `--remote-password` |
 
 ## Quick Start
@@ -138,6 +138,13 @@ Common examples:
 .\target\release\diff-everything.exe old.mp4 new.mp4 --detail full
 .\target\release\diff-everything.exe old.wav new.wav --detail full
 
+# Parallel comparison with forced progress
+.\target\release\diff-everything.exe left\ right\ --jobs 8 --progress
+
+# Kaspersky security scan (auto-detect; /i0 report-only, no disinfection)
+.\target\release\diff-everything.exe old new --security-scan
+.\target\release\diff-everything.exe old new --security-scan --kaspersky "C:\Program Files (x86)\Kaspersky Lab\Kaspersky 21.27\avp.com"
+
 # Remote input
 .\target\release\diff-everything.exe webdav://user:pass@host/old.txt https://host/new.txt
 .\target\release\diff-everything.exe sftp://user:pass@host:22/old.txt sftp://user:pass@host:22/new.txt
@@ -165,6 +172,13 @@ Common examples:
 | `--filter <PATTERN>` | Match paths/labels or content; repeatable, glob supported; text keeps matching lines and `--context` context |
 | `--name-only` / `--quiet` / `--summary-only` | Changed paths only / no output / summary and changed paths only |
 | `--no-color` | Disable ANSI colors |
+| `--progress` / `--no-progress` | Force/hide progress on stderr; auto when stderr is a terminal |
+| **Performance** | |
+| `--jobs <N>` | Worker threads for directory/archive entries; `0` = all cores, `1` = sequential |
+| **Security** | |
+| `--security-scan` | Scan both inputs with installed Kaspersky before comparing |
+| `--kaspersky <FILE>` | Kaspersky `avp.com` path; auto-detected when omitted |
+| `--scan-timeout <SECONDS>` | Kaspersky scan timeout, default 300 |
 | **Resource and recursion limits** | |
 | `--max-rows <N>` / `--max-table-rows <N>` / `--max-workbook-cells <N>` | Detail rows, table rows and workbook cell limits |
 | `--max-file-bytes <N>` / `--max-entries <N>` | Single-file byte limit / directory and archive entry limit |
@@ -233,7 +247,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 310 Rust tests (unit + integration + CLI)
+# 316 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -244,6 +258,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 The release was also validated with 189 end-to-end smoke tests and real external fixtures. Maintainer fixture, smoke-test and release scripts are kept local and are not part of the public repository.
 
 Coverage includes every leaf format and key path/cell/line assertions, invalid-input fallbacks, UTF-16 and large-file paths, archive limits, CLI exit codes and report validity, image reports, three-way merges, bsdiff and HDIFF13/HDIFF19 patches, syntax-tree diff, sync/session flows, notebook merges, remote inputs, OCR/PDF visual reports, OpenAPI breaking changes, external comparators, and real downloaded PDF/Office/archive fixtures. Full results are in [docs/VERIFICATION.md](docs/VERIFICATION.md).
+
+## Parallelism, Progress and Security
+
+- Directory and archive entries are compared in parallel with rayon. `--jobs 0` uses all cores, `--jobs 1` is sequential, and larger values cap workers. Results are collected in path order, so reports remain deterministic.
+- Progress is written to stderr, never to the report. It is enabled automatically when stderr is a terminal; `--progress` forces it and `--no-progress` (or `--quiet`) disables it.
+- `--security-scan` uses only Kaspersky's local `avp.com` interface. Common installation paths are auto-detected; `--kaspersky <FILE>` overrides detection. Scans use `/i0` (report only), so files are never disinfected or deleted. Detected threats abort with exit code `2`; a missing Kaspersky installation or stopped service produces a warning and the diff continues. `--scan-timeout` bounds each scan.
 
 ## Limitations
 

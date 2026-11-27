@@ -1,12 +1,20 @@
 use diff_core::model::DiffBody;
+use diff_core::progress::ProgressHandle;
 use diff_core::{DiffEngine, DiffOptions, DiffStatus};
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 fn engine() -> DiffEngine {
     DiffEngine::new(DiffOptions::default())
+}
+
+fn fixture(relative: &str) -> PathBuf {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.pop();
+    path.pop();
+    path.join("fixtures").join(relative)
 }
 
 #[test]
@@ -109,6 +117,48 @@ fn compares_images() {
     let report = engine().compare(&left, &right).unwrap();
     assert_eq!(report.status, DiffStatus::Different);
     assert!(matches!(report.root.body, DiffBody::Image(_)));
+}
+
+#[test]
+fn parallel_and_sequential_reports_match() {
+    let compare = |left: &Path, right: &Path, jobs: usize| {
+        let options = DiffOptions {
+            jobs,
+            ..DiffOptions::default()
+        };
+        DiffEngine::new(options)
+            .with_progress(ProgressHandle::disabled())
+            .compare(left, right)
+            .unwrap()
+    };
+
+    let left = fixture("dir/left");
+    let right = fixture("dir/right");
+    let sequential = compare(&left, &right, 1);
+    let parallel = compare(&left, &right, 4);
+    assert_eq!(sequential.status, parallel.status);
+    assert_eq!(
+        serde_json::to_value(&sequential.summary).unwrap(),
+        serde_json::to_value(&parallel.summary).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&sequential.root).unwrap(),
+        serde_json::to_value(&parallel.root).unwrap()
+    );
+
+    let left = fixture("zip/old.zip");
+    let right = fixture("zip/new.zip");
+    let sequential = compare(&left, &right, 1);
+    let parallel = compare(&left, &right, 4);
+    assert_eq!(sequential.status, parallel.status);
+    assert_eq!(
+        serde_json::to_value(&sequential.summary).unwrap(),
+        serde_json::to_value(&parallel.summary).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&sequential.root).unwrap(),
+        serde_json::to_value(&parallel.root).unwrap()
+    );
 }
 
 fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {

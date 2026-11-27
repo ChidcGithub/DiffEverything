@@ -13,7 +13,9 @@ pub mod model;
 pub mod ocr;
 pub mod patch;
 pub mod pdf_visual;
+pub mod progress;
 pub mod render;
+pub mod security;
 pub mod session;
 pub mod sync;
 

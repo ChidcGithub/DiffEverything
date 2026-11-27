@@ -13,6 +13,8 @@ crates/
 │  ├─ src/image_export.rs    heatmaps and side-by-side images
 │  ├─ src/ocr.rs             Tesseract image/PDF OCR
 │  ├─ src/pdf_visual.rs      poppler page rendering, per-page visual diff, HTML/PDF reports
+│  ├─ src/progress.rs        thread-safe stderr progress sink
+│  ├─ src/security.rs        Kaspersky avp.com detection, scanning and report parsing
 │  ├─ src/session.rs         session save/load
 │  ├─ src/sync.rs            directory sync plan/apply/backup
 │  ├─ src/diff/
@@ -198,6 +200,13 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - **Markdown**: PR comments and document archives.
 - **HTML**: self-contained single file for sharing.
 - **unified**: compatible with `diff`/`patch` workflows.
+
+## Parallelism, Progress and Security
+
+- Directory and archive entries are compared with rayon. Each worker gets a forked `Ctx` (summary, warnings, excludes); summaries and warnings are merged in path order after collection, so output is deterministic.
+- `--jobs 0` uses the rayon global pool, `--jobs 1` runs sequentially, and larger values build a bounded local thread pool.
+- `ProgressHandle` is a thread-safe stderr sink. It reports entry counts and accepts messages from the engine and Kaspersky scanner; `--progress` forces it, `--no-progress`/`--quiet` disable it.
+- Kaspersky integration auto-detects `avp.com` under common installation paths, checks the `AVP*` service state, and runs `SCAN ... /i0 /R:<temp-report>`. `/i0` is report-only: no disinfection or deletion. Threats abort with exit code `2`; a missing installation or stopped service is a warning. Reports are decoded from UTF-8/UTF-16 and parsed for detection lines.
 
 ## Performance and Safety Boundaries
 

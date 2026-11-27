@@ -5,9 +5,12 @@ use crate::diff::{
 };
 use crate::error::{DiffError, Result};
 use crate::model::*;
+use crate::progress::ProgressHandle;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use quick_xml::XmlVersion;
 use quick_xml::events::Event;
+use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufReader, Read, Write};
@@ -69,6 +72,10 @@ pub struct DiffOptions {
     pub ocr: Option<crate::ocr::OcrOptions>,
     #[serde(default)]
     pub decompile: Option<DecompileOptions>,
+    /// Worker threads for directory/archive entry comparison. 0 uses the
+    /// rayon global pool; 1 disables parallelism.
+    #[serde(default)]
+    pub jobs: usize,
 }
 
 impl Default for DiffOptions {
@@ -93,17 +100,27 @@ impl Default for DiffOptions {
             image_threshold: 0.0,
             ocr: None,
             decompile: None,
+            jobs: 0,
         }
     }
 }
 
 pub struct DiffEngine {
     options: DiffOptions,
+    progress: Option<ProgressHandle>,
 }
 
 impl DiffEngine {
     pub fn new(options: DiffOptions) -> Self {
-        Self { options }
+        Self {
+            options,
+            progress: None,
+        }
+    }
+
+    pub fn with_progress(mut self, progress: ProgressHandle) -> Self {
+        self.progress = Some(progress);
+        self
     }
 
     pub fn options(&self) -> &DiffOptions {
@@ -116,8 +133,33 @@ impl DiffEngine {
         let right_kind = detect_file(right);
         let mut ctx = Ctx::default();
         ctx.excludes = self.build_excludes(&mut ctx);
-        let root = self.compare_paths(left, right, "", 0, &mut ctx)?;
-
+        let pool = if self.options.jobs > 1 {
+            Some(
+                ThreadPoolBuilder::new()
+                    .num_threads(self.options.jobs)
+                    .build()
+                    .map_err(|error| DiffError::Invalid(format!("worker pool: {error}")))?,
+            )
+        } else {
+            None
+        };
+        if let Some(progress) = &self.progress {
+            progress.start("Comparing");
+        }
+        let result = if let Some(pool) = &pool {
+            pool.install(|| self.compare_paths(left, right, "", 0, &mut ctx))
+        } else {
+            self.compare_paths(left, right, "", 0, &mut ctx)
+        };
+        let root = match result {
+            Ok(root) => root,
+            Err(error) => {
+                if let Some(progress) = &self.progress {
+                    progress.finish();
+                }
+                return Err(error);
+            }
+        };
         let mut report = DiffReport {
             tool: TOOL_NAME,
             version: TOOL_VERSION,
@@ -134,6 +176,9 @@ impl DiffEngine {
             && left_kind == FileKind::Executable
             && right_kind == FileKind::Executable
         {
+            if let Some(progress) = &self.progress {
+                progress.set_message("Disassembling code");
+            }
             let mut disassembly = crate::disassembly::DisassemblyOptions::new(
                 options.objdump.clone(),
                 self.options.context,
@@ -146,6 +191,9 @@ impl DiffEngine {
                     .warnings
                     .push(format!("decompilation failed: {error}")),
             }
+        }
+        if let Some(progress) = &self.progress {
+            progress.finish();
         }
         Ok(report)
     }
@@ -1624,41 +1672,42 @@ impl DiffEngine {
         let left_files = self.collect_files(left, ctx)?;
         let right_files = self.collect_files(right, ctx)?;
 
-        let keys: BTreeSet<String> = left_files
+        let keys: Vec<String> = left_files
             .keys()
             .chain(right_files.keys())
             .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
         let total_entries = keys.len();
-        let mut entries = Vec::new();
-        let mut truncated = false;
-
-        for key in keys {
-            if entries.len() >= self.options.max_dir_entries {
-                truncated = true;
-                ctx.warn(format!(
-                    "{}: directory entry limit ({}) reached; some files were skipped",
-                    display_label(label),
-                    self.options.max_dir_entries
-                ));
-                break;
-            }
-
-            match (left_files.get(&key), right_files.get(&key)) {
+        let truncated = total_entries > self.options.max_dir_entries;
+        let keys: Vec<String> = keys
+            .into_iter()
+            .take(self.options.max_dir_entries)
+            .collect();
+        if truncated {
+            ctx.warn(format!(
+                "{}: directory entry limit ({}) reached; some files were skipped",
+                display_label(label),
+                self.options.max_dir_entries
+            ));
+        }
+        if let Some(progress) = &self.progress {
+            progress.add_total(keys.len());
+            progress.set_message(&format!("Comparing {}", display_label(label)));
+        }
+        let display = display_label(label).to_string();
+        let process = |key: &String| -> (String, Result<DiffNode>, Ctx) {
+            let mut local = ctx.fork();
+            let node = match (left_files.get(key), right_files.get(key)) {
                 (Some(left_path), Some(right_path)) => {
-                    entries.push(self.compare_paths(
-                        left_path,
-                        right_path,
-                        &key,
-                        depth + 1,
-                        ctx,
-                    )?);
+                    self.compare_paths(left_path, right_path, key, depth + 1, &mut local)
                 }
                 (Some(left_path), None) => {
                     let kind = detect_file(left_path);
                     let size = fs::metadata(left_path).map(|m| m.len()).unwrap_or(0);
-                    ctx.summary.files_removed += 1;
-                    entries.push(DiffNode::new(
+                    local.summary.files_removed += 1;
+                    Ok(DiffNode::new(
                         key,
                         DiffStatus::Different,
                         DiffBody::OneSided(OneSidedInfo {
@@ -1666,13 +1715,13 @@ impl DiffEngine {
                             kind,
                             size,
                         }),
-                    ));
+                    ))
                 }
                 (None, Some(right_path)) => {
                     let kind = detect_file(right_path);
                     let size = fs::metadata(right_path).map(|m| m.len()).unwrap_or(0);
-                    ctx.summary.files_added += 1;
-                    entries.push(DiffNode::new(
+                    local.summary.files_added += 1;
+                    Ok(DiffNode::new(
                         key,
                         DiffStatus::Different,
                         DiffBody::OneSided(OneSidedInfo {
@@ -1680,10 +1729,31 @@ impl DiffEngine {
                             kind,
                             size,
                         }),
-                    ));
+                    ))
                 }
-                (None, None) => {}
+                (None, None) => Ok(DiffNode::new(
+                    key,
+                    DiffStatus::Equal,
+                    DiffBody::Equal(EqualInfo {
+                        kind: FileKind::Unknown,
+                        note: "missing on both sides".to_string(),
+                    }),
+                )),
+            };
+            if let Some(progress) = &self.progress {
+                progress.inc(&format!("{display}: {key}"));
             }
+            (key.clone(), node, local)
+        };
+        let results: Vec<(String, Result<DiffNode>, Ctx)> = if self.options.jobs == 1 {
+            keys.iter().map(process).collect()
+        } else {
+            keys.par_iter().map(process).collect()
+        };
+        let mut entries = Vec::with_capacity(results.len());
+        for (_, result, local) in results {
+            ctx.merge(local);
+            entries.push(result?);
         }
 
         let status = if entries.iter().any(|entry| entry.status.is_different()) {
@@ -2535,39 +2605,46 @@ impl DiffEngine {
         depth: usize,
         ctx: &mut Ctx,
     ) -> Result<DiffNode> {
-        let keys: BTreeSet<String> = left_entries
+        let keys: Vec<String> = left_entries
             .keys()
             .chain(right_entries.keys())
             .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
         let total_entries = keys.len();
-        let mut entries = Vec::new();
-        let mut truncated = false;
-
-        for key in keys {
-            if entries.len() >= self.options.max_zip_entries {
-                truncated = true;
-                ctx.warn(format!(
-                    "{}: archive entry limit ({}) reached; some entries were skipped",
-                    display_label(label),
-                    self.options.max_zip_entries
-                ));
-                break;
-            }
-
-            match (left_entries.get(&key), right_entries.get(&key)) {
-                (Some(left_data), Some(right_data)) => {
-                    let left_kind = detect_bytes(&key, left_data);
-                    let right_kind = detect_bytes(&key, right_data);
+        let truncated = total_entries > self.options.max_zip_entries;
+        let keys: Vec<String> = keys
+            .into_iter()
+            .take(self.options.max_zip_entries)
+            .collect();
+        if truncated {
+            ctx.warn(format!(
+                "{}: archive entry limit ({}) reached; some entries were skipped",
+                display_label(label),
+                self.options.max_zip_entries
+            ));
+        }
+        if let Some(progress) = &self.progress {
+            progress.add_total(keys.len());
+            progress.set_message(&format!("Comparing {}", display_label(label)));
+        }
+        let display = display_label(label).to_string();
+        let process = |key: &String| -> (String, Result<DiffNode>, Ctx) {
+            let mut local = ctx.fork();
+            let node = match (left_entries.get(key), right_entries.get(key)) {
+                (Some(left_data), Some(right_data)) => (|| -> Result<DiffNode> {
+                    let left_kind = detect_bytes(key, left_data);
+                    let right_kind = detect_bytes(key, right_data);
                     let mut node = self.compare_bytes_internal(
-                        &key,
-                        &key,
+                        key,
+                        key,
                         left_data,
                         right_data,
                         left_kind,
                         right_kind,
                         depth + 1,
-                        ctx,
+                        &mut local,
                     )?;
                     if let Some(options) = &self.options.decompile
                         && left_kind == FileKind::Executable
@@ -2583,44 +2660,65 @@ impl DiffEngine {
                         {
                             Ok(decompiled) => node = node.with_decompiled(decompiled),
                             Err(error) => {
-                                ctx.warn(format!("{key}: decompilation failed ({error})"))
+                                local.warn(format!("{key}: decompilation failed ({error})"))
                             }
                         }
                     }
-                    ctx.summary.files_compared += 1;
+                    local.summary.files_compared += 1;
                     if node.status == DiffStatus::Equal {
-                        ctx.summary.files_equal += 1;
+                        local.summary.files_equal += 1;
                     } else {
-                        ctx.summary.files_changed += 1;
+                        local.summary.files_changed += 1;
                     }
-                    entries.push(node);
-                }
+                    Ok(node)
+                })(),
                 (Some(left_data), None) => {
-                    ctx.summary.files_removed += 1;
-                    entries.push(DiffNode::new(
-                        &key,
+                    local.summary.files_removed += 1;
+                    Ok(DiffNode::new(
+                        key,
                         DiffStatus::Different,
                         DiffBody::OneSided(OneSidedInfo {
                             side: PresenceSide::LeftOnly,
-                            kind: detect_bytes(&key, left_data),
+                            kind: detect_bytes(key, left_data),
                             size: left_data.len() as u64,
                         }),
-                    ));
+                    ))
                 }
                 (None, Some(right_data)) => {
-                    ctx.summary.files_added += 1;
-                    entries.push(DiffNode::new(
-                        &key,
+                    local.summary.files_added += 1;
+                    Ok(DiffNode::new(
+                        key,
                         DiffStatus::Different,
                         DiffBody::OneSided(OneSidedInfo {
                             side: PresenceSide::RightOnly,
-                            kind: detect_bytes(&key, right_data),
+                            kind: detect_bytes(key, right_data),
                             size: right_data.len() as u64,
                         }),
-                    ));
+                    ))
                 }
-                (None, None) => {}
+                (None, None) => Ok(DiffNode::new(
+                    key,
+                    DiffStatus::Equal,
+                    DiffBody::Equal(EqualInfo {
+                        kind: FileKind::Unknown,
+                        note: "missing on both sides".to_string(),
+                    }),
+                )),
+            };
+            if let Some(progress) = &self.progress {
+                progress.inc(&format!("{display}: {key}"));
             }
+            (key.clone(), node, local)
+        };
+        let results: Vec<(String, Result<DiffNode>, Ctx)> = if self.options.jobs == 1 {
+            keys.iter().map(process).collect()
+        } else {
+            keys.par_iter().map(process).collect()
+        };
+        let mut entries = Vec::with_capacity(results.len());
+        for (_, result, local) in results {
+            ctx.merge(local);
+            entries.push(result?);
         }
 
         let status = if entries.iter().any(|entry| entry.status.is_different()) {
@@ -2992,6 +3090,21 @@ impl Ctx {
         } else if self.warnings.len() == 50 {
             self.warnings
                 .push("further warnings suppressed".to_string());
+        }
+    }
+
+    fn fork(&self) -> Self {
+        Self {
+            summary: Summary::default(),
+            warnings: Vec::new(),
+            excludes: self.excludes.clone(),
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.summary.merge(&other.summary);
+        for warning in other.warnings {
+            self.warn(warning);
         }
     }
 }

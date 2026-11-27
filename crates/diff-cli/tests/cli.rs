@@ -1444,6 +1444,79 @@ fn compares_extended_formats_from_cli() {
     );
 }
 
+#[test]
+fn progress_is_written_to_stderr_when_forced() {
+    let left = workspace_path("fixtures/dir/left");
+    let right = workspace_path("fixtures/dir/right");
+    let output = run(&[
+        &left,
+        &right,
+        Path::new("--progress"),
+        Path::new("--jobs"),
+        Path::new("4"),
+        Path::new("--no-color"),
+        Path::new("--detail"),
+        Path::new("full"),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(stdout(&output).contains("directory"), "{}", stdout(&output));
+    assert!(
+        stderr(&output).contains("Comparing"),
+        "progress missing from stderr: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn security_scan_blocks_detected_files_with_mock_kaspersky() {
+    let dir = tempfile::tempdir().unwrap();
+    let left = dir.path().join("left.com");
+    let right = dir.path().join("right.com");
+    std::fs::write(&left, b"left sample").unwrap();
+    std::fs::write(&right, b"right sample").unwrap();
+
+    #[cfg(windows)]
+    let scanner = {
+        let scanner = dir.path().join("mock-avp.cmd");
+        std::fs::write(
+            &scanner,
+            b"@echo off\r\nsetlocal enabledelayedexpansion\r\nset REPORT=\r\nfor %%A in (%*) do (\r\n  set ARG=%%A\r\n  if \"!ARG:~0,3!\"==\"/R:\" set REPORT=!ARG:~3!\r\n)\r\necho Detected: Trojan.Win32.Mock C:\\sample.bin > \"%REPORT%\"\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+        scanner
+    };
+    #[cfg(not(windows))]
+    let scanner = {
+        use std::os::unix::fs::PermissionsExt;
+        let scanner = dir.path().join("mock-avp.sh");
+        std::fs::write(
+            &scanner,
+            b"#!/bin/sh\nfor arg in \"$@\"; do case \"$arg\" in /R:*) report=\"${arg#/R:}\";; esac; done\nprintf 'Detected: Trojan.Win32.Mock /sample.bin\\n' > \"$report\"\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&scanner).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&scanner, permissions).unwrap();
+        scanner
+    };
+
+    let output = run(&[
+        &left,
+        &right,
+        Path::new("--security-scan"),
+        Path::new("--kaspersky"),
+        &scanner,
+        Path::new("--no-progress"),
+        Path::new("--no-color"),
+    ]);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("Kaspersky detected"),
+        "{}",
+        stderr(&output)
+    );
+}
+
 fn workspace_path(relative: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop();
