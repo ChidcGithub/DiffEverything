@@ -17,6 +17,7 @@ use std::time::Duration;
 
 mod link;
 mod remote;
+mod support;
 mod tui;
 
 const HELP_STYLES: Styles = Styles::styled()
@@ -46,9 +47,7 @@ const LONG_VERSION: &str = concat!(
     env!("CARGO_PKG_LICENSE"),
     "\n",
     "Repository: ",
-    env!("CARGO_PKG_REPOSITORY"),
-    "\n",
-    "Features:   linked files, Git history, aria2, Kaspersky, packed-app detection, >90% verdict, rich terminal UI"
+    env!("CARGO_PKG_REPOSITORY")
 );
 
 const CLI_AFTER_HELP: &str = "\
@@ -471,6 +470,15 @@ struct Cli {
         allow_hyphen_values = true
     )]
     external_arg: Vec<String>,
+
+    /// List supported formats, or show details for FORMAT
+    #[arg(
+        help_heading = "Help & information",
+        long,
+        value_name = "FORMAT",
+        num_args = 0..=1
+    )]
+    support: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -571,6 +579,13 @@ fn main() {
 
 fn run() -> Result<i32> {
     let cli = Cli::parse();
+    if let Some(format) = &cli.support {
+        if cli.left.is_some() || cli.right.is_some() {
+            anyhow::bail!("do not pass LEFT/RIGHT together with --support");
+        }
+        support::print(format.as_deref())?;
+        return Ok(0);
+    }
     if !(0.0..=1.0).contains(&cli.image_threshold) {
         anyhow::bail!("--image-threshold must be between 0 and 1");
     }

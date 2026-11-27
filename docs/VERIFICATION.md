@@ -8,7 +8,7 @@
 
 ## Release Verification (v1.0.2.1 - Toyger)
 
-On 2026-11-27, the `1.0.2.1 (Toyger)` hotfix passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 337 debug tests, 337 release tests, the optimized `dist` build and 189 smoke tests. It changes `COMPLETELY DIFFERENT` to `>99%` using the average changed-byte fraction for text/binary (semantic ratios for other formats), consolidates diff-core integration tests into one link target, and adds the fast release profile.
+On 2026-11-27, the `1.0.2.1 (Toyger)` hotfix passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 339 debug tests, 339 release tests, the optimized `dist` build and 189 smoke tests. It changes `COMPLETELY DIFFERENT` to `>99%` using the average changed-byte fraction for text/binary (semantic ratios for other formats), adds `--support` format/capability discovery, removes the feature list from `--version`, consolidates diff-core integration tests into one link target, and adds the fast release profile.
 
 Final release artifact: `target/dist/diff-everything.exe`, 55,574,016 bytes (53.00 MiB), SHA-256 `4B6127060EC70EE5F2C8281CBE3DC5070EDBAB5C9E45B4A7692425408DD17424`. The binary was built from code commit `31334bbb1b2c` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
 
@@ -40,7 +40,7 @@ Final release artifact: `target/release/diff-everything.exe`, 50,950,656 bytes (
 
 ## Extended Format Verification
 
-On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 337 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
+On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 339 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
 
 ## Linked Input Verification
 
@@ -57,7 +57,8 @@ Manual release verification on Windows also downloaded two HTTP files with the e
 ## Terminal UI Verification
 
 - `help_is_grouped_and_includes_examples` runs `--help`, verifies the stable usage line, every task heading, `--style`, `--git-history`, and the examples/exit-code footer.
-- `version_reports_codename_and_build_info` verifies that `--version` prints the codename plus commit, build profile/target, rustc, license, repository and feature metadata, while `-V` prints only the short version line.
+- `version_reports_codename_and_build_info` verifies that `--version` prints the codename plus commit, build profile/target, rustc, license and repository metadata, while `-V` prints only the short version line; it also verifies the former feature list is gone.
+- `support_lists_formats_and_details` verifies the grouped `--support` catalog, a `--support json` capability detail, a `--support parquet` alias, and the exit-2 unknown-format error. `catalog_aliases_are_unique` guards the static catalog.
 - `rich_style_adds_banner_rules_and_line_numbers` runs with `--style rich --no-color --detail full`, verifies the banner/rule/status layout, the line-number gutter, and confirms that auto mode still emits the compact plain layout when stdout is piped.
 - Existing forced-progress coverage verifies the spinner message on stderr; the progress renderer now adds a fixed-width `[####----]` bar, counts and percentage without changing the test-visible label.
 - The rich layout is ASCII-only (banner rule `=`, section rules `-`, gutter `|`, markers `* + - ~ !`) so it remains readable in legacy Windows code pages; color is added separately through ANSI sequences.
@@ -76,17 +77,17 @@ Integration tests are consolidated under one `tests/integration.rs` target; the 
 
 ```text
 cargo test --workspace
-11 CLI binary unit tests
-73 CLI tests
+12 CLI binary unit tests
+74 CLI tests
 147 diff-core unit tests
 106 diff-core integration tests (one linked target: engine 7, extended formats 21,
     formats 58, robustness 15, folder merge 3, folder patch 2)
-= 337 tests, all passing
+= 339 tests, all passing
 ```
 
 ```text
 cargo test --workspace --release
-(337 tests, all passing)
+(339 tests, all passing)
 ```
 
 ```text

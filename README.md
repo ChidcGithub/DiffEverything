@@ -32,7 +32,7 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 | Notebooks | `.ipynb` | Cell-level diff, global cell-id alignment, output/execution-count changes, three-way cell merge |
 | Merge | Text / notebooks / directories | Three-way merge; clean or conflict exit codes; directory output to a new directory |
 | Reports | — | ANSI, interactive TUI, JSON, Markdown, self-contained HTML, unified diff |
-| Workflow | — | Exit codes, `--name-only`, `--quiet`, `--summary-only`, streaming fallback for large files, directory sync, session save/load, external comparator delegation, parallel directory/archive comparison (`--jobs`), terminal progress, packed-application legal prompt, completely-different (>99%) verdict, optional Kaspersky security scan |
+| Workflow | — | Exit codes, `--name-only`, `--quiet`, `--summary-only`, format/capability discovery with `--support`, streaming fallback for large files, directory sync, session save/load, external comparator delegation, parallel directory/archive comparison (`--jobs`), terminal progress, packed-application legal prompt, completely-different (>99%) verdict, optional Kaspersky security scan |
 | Linked input | HTTP(S) files, Git repository URLs | Download with embedded aria2 (100 MiB confirmation guard, `-y`), compare locally; `--git-history` compares refs, HEAD and commit metadata (up to 2,000 commits); Kaspersky scan runs by default for linked inputs |
 | Remote input | WebDAV / HTTP(S) / SFTP / SMB | Download files or recursive directories, then compare locally; URL credentials or `--remote-user` / `--remote-password` |
 
@@ -50,6 +50,10 @@ Common examples:
 ```powershell
 # Version, codename and build metadata (-V prints the short version only)
 .\target\release\diff-everything.exe --version
+
+# List supported formats, or inspect one format's diff capabilities
+.\target\release\diff-everything.exe --support
+.\target\release\diff-everything.exe --support parquet
 
 # Text
 .\target\release\diff-everything.exe fixtures\text\old.txt fixtures\text\new.txt
@@ -187,7 +191,6 @@ Build:      release / <target-triple>
 Rust:       <rustc-version>
 License:    MIT
 Repository: https://github.com/ChidcGithub/DiffEverything
-Features:   linked files, Git history, aria2, Kaspersky, packed-app detection, >99% verdict, rich terminal UI
 ```
 
 ## CLI Options
@@ -195,7 +198,8 @@ Features:   linked files, Git history, aria2, Kaspersky, packed-app detection, >
 | Option | Description |
 |---|---|
 | **General** | |
-| `-h, --help` / `-V, --version` | Grouped help / short version; `--version` adds commit, build, Rust, license, repository and feature metadata |
+| `-h, --help` / `-V, --version` | Grouped help / short version; `--version` adds commit, build, Rust, license and repository metadata |
+| `--support [FORMAT]` | List every supported format, or show all diff capabilities for one format |
 | **Input and comparison** | |
 | `<LEFT>` `<RIGHT>` | Two files or directories; HTTP(S) file links, Git repository URLs, and WebDAV / SFTP / SMB URLs are also accepted |
 | `--git-history` | Compare the refs, HEAD and commit metadata of two Git repositories or repository URLs (auto-enabled for two `.git` URLs) |
@@ -295,7 +299,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 337 Rust tests (unit + integration + CLI)
+# 339 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint

@@ -1510,14 +1510,46 @@ fn version_reports_codename_and_build_info() {
         "Rust:",
         "License:",
         "Repository:",
-        "Features:",
     ] {
         assert!(text.contains(field), "missing {field}\n{text}");
     }
+    assert!(!text.contains("Features:"), "{text}");
 
     let short = run_str(&["-V"]);
     assert_eq!(short.status.code(), Some(0), "{}", stderr(&short));
     assert_eq!(stdout(&short).trim(), "diff-everything 1.0.2.1 (Toyger)");
+}
+
+#[test]
+fn support_lists_formats_and_details() {
+    let all = run_str(&["--support"]);
+    assert_eq!(all.status.code(), Some(0), "{}", stderr(&all));
+    let text = stdout(&all);
+    for expected in ["Supported formats", "json", "archive", "git-history"] {
+        assert!(text.contains(expected), "missing {expected}\n{text}");
+    }
+
+    let detail = run_str(&["--support", "json"]);
+    assert_eq!(detail.status.code(), Some(0), "{}", stderr(&detail));
+    let detail_text = stdout(&detail);
+    assert!(
+        detail_text.contains("JSON [Structured data]"),
+        "{detail_text}"
+    );
+    assert!(detail_text.contains("Semantic path-level"), "{detail_text}");
+    assert!(detail_text.contains("Cross-format"), "{detail_text}");
+
+    let alias = run_str(&["--support", "parquet"]);
+    assert_eq!(alias.status.code(), Some(0), "{}", stderr(&alias));
+    assert!(stdout(&alias).contains("PARQUET"), "{}", stdout(&alias));
+
+    let unknown = run_str(&["--support", "nonsense"]);
+    assert_eq!(unknown.status.code(), Some(2), "{}", stderr(&unknown));
+    assert!(
+        stderr(&unknown).contains("unknown format"),
+        "{}",
+        stderr(&unknown)
+    );
 }
 
 #[test]

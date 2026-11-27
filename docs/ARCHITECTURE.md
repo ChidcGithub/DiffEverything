@@ -45,6 +45,7 @@ crates/
    ├─ src/main.rs            argument parsing, exit codes, merge/patch/image branches
    ├─ src/link.rs            aria2/built-in HTTP downloads, 100 MiB guard, Git history
    ├─ src/remote.rs          WebDAV / SFTP / SMB remote inputs
+   ├─ src/support.rs         supported-format and per-format capability catalog
    ├─ src/tui.rs             interactive ANSI viewer
    └─ tests/cli.rs           CLI end-to-end tests
 ```
@@ -230,6 +231,13 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - Images, tables, workbooks, notebooks, audio and directories/archives use semantic ratios: pixel ratio, changed rows / max rows, changed cells / max cells, changed waveform windows / total windows, and changed entries / total entries.
 - Top-level containers use their entry ratio rather than the maximum child ratio, so one heavily changed file in a large directory does not mislabel the whole comparison.
 - ANSI, Markdown, HTML and JSON expose the verdict; the normal `DIFFERENT` status and exit code are unchanged.
+
+## Supported Format Catalog
+
+- `diff-cli/src/support.rs` contains a static catalog of format families, aliases, summaries, diff capabilities and notes.
+- `--support` prints the catalog grouped by category; `--support FORMAT` resolves a case-insensitive name or alias and prints the full capability list.
+- The catalog is display-only: it does not change format detection, dispatch or comparison behavior.
+- `--version` intentionally omits the feature list; use `--support` for capability discovery.
 
 ## Version and Build Metadata
 
