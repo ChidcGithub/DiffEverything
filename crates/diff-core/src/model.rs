@@ -2,9 +2,7 @@ use serde::Serialize;
 use std::path::Path;
 
 pub const TOOL_NAME: &str = "DiffEverything";
-// Cargo requires three-component semver, so the hotfix revision is displayed
-// as an additional component while package metadata remains 1.0.2.
-pub const TOOL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), ".1 (Toyger)");
+pub const TOOL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (Toyger)");
 pub const COMPLETELY_DIFFERENT_THRESHOLD: f64 = 0.99;
 
 /// Broad category of an input artifact. Handlers are selected from this.

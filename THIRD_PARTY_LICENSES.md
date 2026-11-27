@@ -5,7 +5,7 @@ DiffEverything itself is licensed under the MIT License; see [LICENSE](LICENSE).
 This file lists third-party Rust crates in the workspace dependency graph and reproduces the license texts published with those crates. It covers normal, build and test dependencies to be conservative.
 
 - Generated: 2026-11-27
-- Cargo.lock SHA-256 (first 16 hex): `fe93aeeadcc44865`
+- Cargo.lock SHA-256 (first 16 hex): `dab7a1831b5346b6`
 - Third-party packages: 624
 - Distinct license texts: 354
 

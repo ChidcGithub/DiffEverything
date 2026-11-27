@@ -241,7 +241,7 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 
 ## Version and Build Metadata
 
-- The Cargo package metadata is `1.0.2` (Cargo requires three-component semver); the displayed hotfix version is `1.0.2.1`, codename `Toyger`.
+- The package/display version is `1.0.3`, codename `Toyger`.
 - `diff-cli/build.rs` captures the git commit, Cargo target/profile and `rustc --version` at compile time. Missing git data falls back to `unknown`.
 - `-V` / `version` exposes the short semantic version; `--version` / `long_version` appends commit, build profile/target, rustc, license, repository and feature metadata. Build metadata is display-only and does not affect diff behavior.
 
