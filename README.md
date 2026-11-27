@@ -2,7 +2,7 @@
 
 A Rust CLI that compares heterogeneous files by normalizing them into one diff tree. It does not replace `diff`; it adds format-aware comparison and multiple report formats.
 
-Current version: **v1.0-4596984fe5db**. The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff-pdf, nbdime, HDiffPatch and others. See [docs/REFERENCES.md](docs/REFERENCES.md).
+The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff-pdf, nbdime, HDiffPatch and others. See [docs/REFERENCES.md](docs/REFERENCES.md).
 
 ## Features
 
@@ -206,25 +206,15 @@ cargo test --workspace
 # Strict lint
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-
-# Download external fixtures
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\fetch-testdata.ps1
-
-# Regenerate SQLite / ELF fixtures
-python scripts\make-fixtures.py
-
-# 189 end-to-end smoke tests
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke-test.ps1
-
-# fmt + clippy + tests + release build + smoke
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-all.ps1
 ```
+
+The release was also validated with 189 end-to-end smoke tests and real external fixtures. Maintainer fixture, smoke-test and release scripts are kept local and are not part of the public repository.
 
 Coverage includes every leaf format and key path/cell/line assertions, invalid-input fallbacks, UTF-16 and large-file paths, archive limits, CLI exit codes and report validity, image reports, three-way merges, bsdiff and HDIFF13/HDIFF19 patches, syntax-tree diff, sync/session flows, notebook merges, remote inputs, OCR/PDF visual reports, OpenAPI breaking changes, external comparators, and real downloaded PDF/Office/archive fixtures. Full results are in [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 ## Limitations
 
-- PDF uses the text layer by default; `--pdf-visual` requires poppler `pdftoppm`, and `--ocr` requires Tesseract. Portable builds can be downloaded by the scripts.
+- PDF uses the text layer by default; `--pdf-visual` requires poppler `pdftoppm`, and `--ocr` requires Tesseract. Portable builds can be installed separately.
 - PDF visual output includes `report.pdf` (side-by-side + heatmap), `report-overlay.pdf` (raster red overlay), `report-vector.pdf` (vector rectangles appended to page content), plus HTML/PNG; `report.html` embeds base64 PNGs and is self-contained.
 - WebDAV / HTTP(S) / SFTP / SMB support file input; WebDAV / SFTP / SMB support recursive directories.
 - RPM supports gzip/xz/zstd payloads; ZIP supports bzip2, LZMA (method 14) and zstd entries.
