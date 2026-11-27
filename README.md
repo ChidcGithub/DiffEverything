@@ -2,7 +2,7 @@
 
 用 Rust 编写的 **CLI 统一文件对比工具**。目标不是替代 `diff`，而是把不同类型文件先归一化成可比较的中间表示，再用同一棵差异树输出终端、JSON、Markdown、HTML 或 unified diff。
 
-当前版本：**v0.2.0（仅 CLI）**。参考并融合了 diffoscope、Graphtage、difftastic、Open Diff、uni-diff、diff-pdf、nbdime、HDiffPatch 等项目的核心 diff 思路，详见 [docs/REFERENCES.md](docs/REFERENCES.md)。
+当前版本：**v1.0-4596984fe5db（仅 CLI）**。参考并融合了 diffoscope、Graphtage、difftastic、Open Diff、uni-diff、diff-pdf、nbdime、HDiffPatch 等项目的核心 diff 思路，详见 [docs/REFERENCES.md](docs/REFERENCES.md)。
 
 ## 功能总览
 
