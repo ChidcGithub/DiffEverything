@@ -11,7 +11,7 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 | Text / code | Any text, UTF-8 / UTF-16 / GBK, `.reg` exports | Line diff, context, word-level highlights, ignore whitespace / case |
 | Syntax-aware | Rust, Python, JS/JSX, TS/TSX, C, C++, Go, Java, Bash, Ruby, C#, Swift, Lua | tree-sitter token diff, full syntax-tree diff (`--mode tree`), bounded syntax-event graph diff (`--mode graph`, including non-local moves), comment ignoring |
 | Structured data | JSON / JSON5 / YAML / TOML / INI / XML / HTML / Plist (XML + binary) / Pickle / Gettext (.mo) / OpenAPI | Semantic tree diff with path-level added / removed / changed, array similarity alignment, OpenAPI breaking-change markers |
-| Serialized data | Parquet / Avro / ORC / CBOR / MessagePack / Protobuf | Parquet/Avro/ORC schema and row values; CBOR/MessagePack values; generic Protobuf wire fields; `--detail concise` caps changes, `full` shows every change |
+| Serialized data | Parquet / Avro / ORC / CBOR / MessagePack / Protobuf | Parquet/Avro schema and row values; ORC metadata, stripe statistics and payload hashes; CBOR/MessagePack values; generic Protobuf wire fields; `--detail concise` caps changes, `full` shows every change |
 | Databases | SQLite 3 `.db` / `.sqlite` | Semantic diff of tables, columns, rows, indexes and triggers; equal databases with different page sizes or layouts compare equal |
 | Cross-format | JSON ↔ YAML ↔ TOML ↔ INI ↔ XML ↔ HTML ↔ Plist ↔ Pickle | Parse both sides into a common tree, e.g. `YAML+JSON`, `PLIST+JSON`, `PICKLE+JSON` |
 | Tables | CSV / TSV | Header, row and cell diff; align rows with `--key` |
