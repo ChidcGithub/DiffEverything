@@ -1,6 +1,7 @@
 use crate::model::*;
 use crate::render::{
-    RenderOptions, display_path, human_size, marker_for, summary_parts, truncate_chars,
+    RenderOptions, display_path, human_size, marker_for, sanitize_controls, summary_parts,
+    truncate_chars,
 };
 use std::fmt::Write;
 
@@ -44,7 +45,8 @@ pub fn render(report: &DiffReport, options: &RenderOptions) -> String {
                         let _ = writeln!(
                             out,
                             "  {marker} {} -> {}",
-                            report.left.path, report.right.path
+                            sanitize_controls(&report.left.path),
+                            sanitize_controls(&report.right.path)
                         );
                     } else {
                         let _ = writeln!(out, "  {marker} {path}");
@@ -57,7 +59,8 @@ pub fn render(report: &DiffReport, options: &RenderOptions) -> String {
                         let _ = writeln!(
                             out,
                             "  {marker} {} -> {}",
-                            report.left.path, report.right.path
+                            sanitize_controls(&report.left.path),
+                            sanitize_controls(&report.right.path)
                         );
                     } else {
                         let _ = writeln!(out, "  {marker} {path}");
@@ -89,14 +92,14 @@ fn render_plain_header(report: &DiffReport, options: &RenderOptions, out: &mut S
     let _ = writeln!(
         out,
         "left   : {} [{}, {}]",
-        report.left.path,
+        sanitize_controls(&report.left.path),
         report.left.kind.label(),
         human_size(report.left.size)
     );
     let _ = writeln!(
         out,
         "right  : {} [{}, {}]",
-        report.right.path,
+        sanitize_controls(&report.right.path),
         report.right.kind.label(),
         human_size(report.right.size)
     );
@@ -161,7 +164,7 @@ fn field_label(label: &str, options: &RenderOptions) -> String {
 fn input_summary(info: &ArtifactInfo, options: &RenderOptions) -> String {
     format!(
         "{}  {}",
-        paint(&info.path, BOLD_WHITE, options.color),
+        paint(&sanitize_controls(&info.path), BOLD_WHITE, options.color),
         paint(
             &format!("[{} | {}]", info.kind.label(), human_size(info.size)),
             DIM,
@@ -202,7 +205,9 @@ fn render_decompiled_content(
     let _ = writeln!(out);
     let mut header = format!(
         "{pad}decompiled code ({}): +{} -{}",
-        decompiled.tool, diff.added_lines, diff.removed_lines
+        sanitize_controls(&decompiled.tool),
+        diff.added_lines,
+        diff.removed_lines
     );
     if decompiled.truncated || diff.truncated {
         header.push_str(" (truncated)");
@@ -255,12 +260,13 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
     } else {
         marker_for(node.status).to_string()
     };
+    let label_text = sanitize_controls(&node.label);
     let label = if node.label.is_empty() {
         String::new()
     } else if options.rich {
-        format!("{} ", paint(&node.label, BOLD_WHITE, options.color))
+        format!("{} ", paint(&label_text, BOLD_WHITE, options.color))
     } else {
-        format!("{} ", node.label)
+        format!("{label_text} ")
     };
 
     match &node.body {
@@ -347,7 +353,11 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
             }
             let _ = writeln!(out, "{header}");
             for cell in &diff.changed_cells {
-                let mut detail = format!("{pad}  ~ cell {} [{}]", cell.index, cell.cell_type);
+                let mut detail = format!(
+                    "{pad}  ~ cell {} [{}]",
+                    cell.index,
+                    sanitize_controls(&cell.cell_type)
+                );
                 if cell.execution_changed {
                     detail.push_str(" execution changed");
                 }
@@ -421,14 +431,14 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
                 let _ = writeln!(
                     out,
                     "{pad}  columns added: {}",
-                    diff.columns_added.join(", ")
+                    sanitize_controls(&diff.columns_added.join(", "))
                 );
             }
             if !diff.columns_removed.is_empty() {
                 let _ = writeln!(
                     out,
                     "{pad}  columns removed: {}",
-                    diff.columns_removed.join(", ")
+                    sanitize_controls(&diff.columns_removed.join(", "))
                 );
             }
             for row in &diff.rows {
@@ -484,7 +494,7 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
                 let _ = writeln!(
                     out,
                     "{pad}  ~ sheet {}: {}x{} -> {}x{}, {} cell(s)",
-                    sheet.name,
+                    sanitize_controls(&sheet.name),
                     sheet.left_rows,
                     sheet.left_columns,
                     sheet.right_rows,
@@ -683,7 +693,7 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
                 out,
                 "{pad}{marker} {label}[{}] {}",
                 info.kind.label(),
-                info.note
+                sanitize_controls(&info.note)
             );
         }
         DiffBody::Unsupported(info) => {

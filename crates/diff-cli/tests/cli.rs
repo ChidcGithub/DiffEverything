@@ -1558,6 +1558,25 @@ fn rich_style_adds_banner_rules_and_line_numbers() {
 }
 
 #[test]
+fn ansi_output_sanitizes_control_characters() {
+    let dir = tempfile::tempdir().unwrap();
+    let left = dir.path().join("left.txt");
+    let right = dir.path().join("right.txt");
+    std::fs::write(&left, "safe\n").unwrap();
+    std::fs::write(&right, "safe\x1b[31mINJECTED\x1b[0m\n").unwrap();
+    let output = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(!text.contains('\x1b'), "raw escape sequence: {text:?}");
+    assert!(text.contains("safe?[31mINJECTED?[0m"), "{text}");
+}
+
+#[test]
 fn security_scan_blocks_detected_files_with_mock_kaspersky() {
     let dir = tempfile::tempdir().unwrap();
     let left = dir.path().join("left.com");

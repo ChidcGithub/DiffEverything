@@ -1,5 +1,6 @@
 use crate::progress::ProgressHandle;
 use std::collections::BTreeSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -149,7 +150,16 @@ fn scan_many(executable: &Path, paths: &[&Path], timeout: Duration) -> Result<Re
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let status = run_with_timeout(&mut command, timeout)?;
-    let data = std::fs::read(&report_path).unwrap_or_default();
+    let data = std::fs::File::open(&report_path)
+        .ok()
+        .and_then(|file| {
+            let mut data = Vec::new();
+            file.take(4 * 1024 * 1024)
+                .read_to_end(&mut data)
+                .ok()
+                .map(|_| data)
+        })
+        .unwrap_or_default();
     let text = decode_report(&data);
     if text.trim().is_empty() {
         return Err("Kaspersky returned no report".to_string());

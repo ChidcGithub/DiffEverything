@@ -23,3 +23,4 @@
 *.odp -text
 *.epub -text
 *.exe -text
+*.zst -text

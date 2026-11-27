@@ -27,6 +27,7 @@ ureq = "2"
 url = "2"
 walkdir.workspace = true
 smb2 = "0.35"
+zstd.workspace = true
 
 [dev-dependencies]
 image.workspace = true

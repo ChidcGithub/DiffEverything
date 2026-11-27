@@ -173,7 +173,7 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 ## Remote and Linked Input
 
 - Plain `http(s)://` file URLs use the linked-input path in `diff-cli/src/link.rs`: HEAD is used to read `Content-Length`, aria2 performs the download when available, and a built-in streaming HTTP client is the fallback.
-- Windows releases embed aria2 1.37.0 (`crates/diff-cli/assets/aria2c.exe`) and extract it to `%TEMP%\diff-everything-tools` with a per-process filename. `--aria2 <FILE>` overrides it; other platforms use `aria2c` from PATH.
+- Windows releases embed aria2 1.37.0 as a zstd-compressed asset (`crates/diff-cli/assets/aria2c.exe.zst`), decompress it on first use, and extract it to `%TEMP%\diff-everything-tools` with a per-process filename. `--aria2 <FILE>` overrides it; other platforms use `aria2c` from PATH.
 - Downloads above 100 MiB require confirmation. `-y` accepts the prompt; non-interactive runs without `-y` fail before writing the file. `--download-timeout` bounds downloads and clones.
 - `--git-history` treats both inputs as Git repositories. Remote URLs are cloned as bare mirrors with `--filter=blob:none`, then retried as a full mirror. The report compares refs, HEAD, commit count and commit metadata for the most recent 2,000 commits per side.
 - `webdav://` / `webdavs://` map to HTTP(S) and use the WebDAV listing path; `sftp://` reads through ssh2 and `smb://` through smb2.
@@ -230,3 +230,6 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - ZIP/TAR entries are read in memory with per-entry limits to avoid zip bombs.
 - Symbolic links are not followed.
 - All limits are exposed through `DiffOptions`.
+- The release profile enables fat LTO, one codegen unit, `opt-level = 3` and symbol stripping. The embedded Windows aria2 binary is zstd-compressed and decompressed on first use.
+- Directory/archive workers share an `Arc<GlobSet>` exclusion matcher, merge sorted keys in linear time, and avoid per-entry key clones and progress formatting when progress is disabled.
+- Both workspace crates forbid `unsafe` code. ANSI output sanitizes untrusted control characters, the TUI has an RAII terminal cleanup guard, and Kaspersky report reads are capped at 4 MiB.

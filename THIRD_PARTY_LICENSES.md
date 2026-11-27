@@ -5,7 +5,7 @@ DiffEverything itself is licensed under the MIT License; see [LICENSE](LICENSE).
 This file lists third-party Rust crates in the workspace dependency graph and reproduces the license texts published with those crates. It covers normal, build and test dependencies to be conservative.
 
 - Generated: 2026-11-27
-- Cargo.lock SHA-256 (first 16 hex): `d1e1002913e27f68`
+- Cargo.lock SHA-256 (first 16 hex): `30be2d86d65b59fd`
 - Third-party packages: 624
 - Distinct license texts: 354
 
@@ -68,7 +68,7 @@ No GPL or AGPL Rust crate is linked. The only dependency offering an LGPL option
 |---|---|---|---|
 | aria2 (`aria2c.exe`, Windows builds) | 1.37.0 | GPL-2.0-or-later | https://github.com/aria2/aria2/releases/tag/release-1.37.0 |
 
-The Windows build embeds the unmodified official 64-bit `aria2c.exe` and invokes it as a separate process for HTTP(S) downloads. The complete GPLv2 text and the OpenSSL notice shipped with that build are reproduced below; the upstream authors file is in `crates/diff-cli/assets/aria2-AUTHORS`.
+The Windows build embeds the unmodified official 64-bit `aria2c.exe` in a zstd-compressed asset (`crates/diff-cli/assets/aria2c.exe.zst`, raw SHA-256 `BE2099C214F63A3CB4954B09A0BECD6E2E34660B886D4C898D260FEBFE9D70C2`) and decompresses it to the temporary directory on first use. It is invoked as a separate process for HTTP(S) downloads. The complete GPLv2 text and the OpenSSL notice shipped with that build are reproduced below; the upstream authors file is in `crates/diff-cli/assets/aria2-AUTHORS`.
 
 ### aria2 1.37.0 license text
 

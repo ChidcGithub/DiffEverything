@@ -49,3 +49,9 @@ zip = { version = "2.6", default-features = false, features = [
     "zstd",
 ] }
 zstd = { version = "0.14", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

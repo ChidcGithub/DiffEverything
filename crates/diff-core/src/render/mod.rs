@@ -5,6 +5,7 @@ pub mod markdown;
 pub mod unified;
 
 use crate::model::{DiffBody, DiffNode, Summary};
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RenderOptions {
@@ -40,9 +41,33 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
+/// Replace C0/C1 control characters (except tab) with `?` before writing
+/// untrusted paths or file content to a terminal. ANSI escape sequences are
+/// control data, not content, and must never reach the terminal raw.
+pub fn sanitize_controls(text: &str) -> Cow<'_, str> {
+    if !text
+        .chars()
+        .any(|character| character.is_control() && character != '\t')
+    {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(
+        text.chars()
+            .map(|character| {
+                if character.is_control() && character != '\t' {
+                    '?'
+                } else {
+                    character
+                }
+            })
+            .collect(),
+    )
+}
+
 pub fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let text = sanitize_controls(text);
     if text.chars().count() <= max_chars {
-        return text.to_string();
+        return text.into_owned();
     }
     let mut out: String = text.chars().take(max_chars).collect();
     out.push_str("...");
@@ -176,7 +201,7 @@ pub fn display_path(label: &str) -> String {
     if label.is_empty() {
         "<root>".to_string()
     } else {
-        label.to_string()
+        sanitize_controls(label).into_owned()
     }
 }
 

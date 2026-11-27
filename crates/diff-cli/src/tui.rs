@@ -1,4 +1,5 @@
 use anyhow::Result;
+use crossterm::cursor::Show;
 use crossterm::event::{Event, KeyCode, KeyEventKind, read};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -12,6 +13,28 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use std::io;
 
+/// Restores the cursor, alternate screen and raw-mode state on every exit
+/// path, including early errors and unwinding panics from the event loop.
+struct TerminalSession;
+
+impl TerminalSession {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            return Err(error.into());
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
+        let _ = disable_raw_mode();
+    }
+}
+
 pub fn run(title: &str, ansi_text: &str) -> Result<()> {
     let text = strip_ansi(ansi_text);
     let lines: Vec<Line<'static>> = text
@@ -22,15 +45,12 @@ pub fn run(title: &str, ansi_text: &str) -> Result<()> {
         return Ok(());
     }
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
+    let session = TerminalSession::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     let result = event_loop(&mut terminal, title, lines);
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    drop(terminal);
+    drop(session);
     result
 }
 

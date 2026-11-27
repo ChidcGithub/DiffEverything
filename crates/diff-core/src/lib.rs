@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod concise;
 pub mod detect;
 pub mod diff;

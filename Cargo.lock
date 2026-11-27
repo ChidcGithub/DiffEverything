@@ -1336,6 +1336,7 @@ dependencies = [
  "url",
  "walkdir",
  "zip 2.6.1",
+ "zstd 0.14.5",
 ]
 
 [[package]]

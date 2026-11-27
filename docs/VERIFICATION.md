@@ -8,7 +8,7 @@
 
 ## Release Verification (v1.0.1 - Toyger)
 
-On 2026-11-27, the `1.0.1 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 328 debug tests, 328 release tests, the release build and 189 smoke tests. The short display version is now the semantic package version plus the release codename; `--version` additionally reports the build commit, profile, target and toolchain metadata.
+On 2026-11-27, the `1.0.1 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 330 debug tests, 330 release tests, the release build and 189 smoke tests. The short display version is now the semantic package version plus the release codename; `--version` additionally reports the build commit, profile, target and toolchain metadata.
 
 Final release artifact: `target/release/diff-everything.exe`, 62,518,272 bytes (59.62 MiB), SHA-256 `5D07E3F8B7B6B782E7D67AA7F228320F57739445D05449A7424076D36D5C40F2`. The binary was built from code commit `0dec57def01a`; `--version` reports that commit together with the profile, target, rustc version, license, repository and feature list.
 
@@ -22,7 +22,7 @@ Final release artifact: `target/release/diff-everything.exe`, 50,950,656 bytes (
 
 ## Extended Format Verification
 
-On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 328 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
+On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 330 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
 
 ## Linked Input Verification
 
@@ -43,13 +43,16 @@ Manual release verification on Windows also downloaded two HTTP files with the e
 - `rich_style_adds_banner_rules_and_line_numbers` runs with `--style rich --no-color --detail full`, verifies the banner/rule/status layout, the line-number gutter, and confirms that auto mode still emits the compact plain layout when stdout is piped.
 - Existing forced-progress coverage verifies the spinner message on stderr; the progress renderer now adds a fixed-width `[####----]` bar, counts and percentage without changing the test-visible label.
 - The rich layout is ASCII-only (banner rule `=`, section rules `-`, gutter `|`, markers `* + - ~ !`) so it remains readable in legacy Windows code pages; color is added separately through ANSI sequences.
+- `ansi_output_sanitizes_control_characters` feeds a file containing an ANSI escape sequence and verifies that the report replaces it instead of emitting a live terminal control sequence.
+- `extracts_the_embedded_aria2_binary` verifies that the zstd-compressed Windows asset decompresses to the expected 5,649,408-byte executable.
+- Parallel/sequential directory and archive reports remain byte-identical after sharing `Arc<GlobSet>`, linear key merging, and removing the per-entry result-key clone.
 
 ## Test Results
 
 ```text
 cargo test --workspace
-10 CLI binary unit tests
-68 CLI tests
+11 CLI binary unit tests
+69 CLI tests
 144 diff-core unit tests
 7 engine integration tests
 21 extended format integration tests
@@ -57,12 +60,12 @@ cargo test --workspace
 15 robustness tests
 3 folder merge integration tests
 2 folder patch integration tests
-= 328 tests, all passing
+= 330 tests, all passing
 ```
 
 ```text
 cargo test --workspace --release
-(328 tests, all passing)
+(330 tests, all passing)
 ```
 
 ```text

@@ -285,7 +285,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 328 Rust tests (unit + integration + CLI)
+# 330 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -334,12 +334,22 @@ elapsed  7 ms
 - Two `.git` URLs (HTTP(S), `file://`, `git://`, `ssh://` or `git@host:path`) enable Git-history mode automatically. One repository URL mixed with a local path requires `--git-history`.
 - Linked inputs run the Kaspersky scan by default. Use `--no-security-scan` for an offline or non-Windows environment that has no Kaspersky installation.
 
+## Performance, Size and Hardening
+
+- Release builds use `opt-level = 3`, fat LTO, one codegen unit and symbol stripping. This improves optimizer freedom and removes unused symbols; the release binary is rebuilt from the same source.
+- The embedded Windows aria2 executable is stored zstd-compressed in the binary (2.07 MiB instead of 5.65 MiB) and decompressed to the temporary directory on first use. Raw binary SHA-256 is recorded in `THIRD_PARTY_LICENSES.md`.
+- Directory and archive entry comparison shares one `Arc<GlobSet>` instead of cloning the matcher per entry, merges sorted key sets linearly, avoids a per-entry result-key clone, and skips progress-message formatting when progress is disabled.
+- Both crates use `#![forbid(unsafe_code)]`.
+- ANSI reports replace C0/C1 control characters (except tab) in untrusted paths and content, preventing terminal escape injection from malicious file contents or archive entry names.
+- The TUI restores cursor, alternate-screen and raw-mode state through an RAII guard, including early errors and unwinding panics.
+- Kaspersky report parsing reads at most 4 MiB from the temporary report file.
+
 ## Limitations
 
 - PDF uses the text layer by default; `--pdf-visual` requires poppler `pdftoppm`, and `--ocr` requires Tesseract. Portable builds can be installed separately.
 - PDF visual output includes `report.pdf` (side-by-side + heatmap), `report-overlay.pdf` (raster red overlay), `report-vector.pdf` (vector rectangles appended to page content), plus HTML/PNG; `report.html` embeds base64 PNGs and is self-contained.
 - WebDAV / HTTP(S) / SFTP / SMB support file input; WebDAV / SFTP / SMB support recursive directories.
-- aria2 is embedded only in Windows builds. Linux and macOS use `aria2c` from PATH when present and otherwise fall back to the built-in HTTP downloader.
+- aria2 is embedded only in Windows builds. The executable is stored zstd-compressed in the binary and extracted to the temporary directory on first use; Linux and macOS use `aria2c` from PATH when present and otherwise fall back to the built-in HTTP downloader.
 - Git history requires `git` on PATH. Remote histories are capped at 2,000 commits per side, and refs/commit metadata are compared rather than every commit patch.
 - RPM supports gzip/xz/zstd payloads; ZIP supports bzip2, LZMA (method 14) and zstd entries.
 - `--sync` only applies to local directories; remote inputs are rejected to avoid modifying temporary copies.

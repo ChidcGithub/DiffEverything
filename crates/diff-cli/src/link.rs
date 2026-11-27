@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 #[cfg(windows)]
-const ARIA2_BYTES: &[u8] = include_bytes!("../assets/aria2c.exe");
+const ARIA2_ZST: &[u8] = include_bytes!("../assets/aria2c.exe.zst");
+#[cfg(windows)]
+const ARIA2_SIZE: u64 = 5_649_408;
 #[cfg(windows)]
 const ARIA2_VERSION: &str = "1.37.0";
 const LARGE_FILE_BYTES: u64 = 100 * 1024 * 1024;
@@ -355,7 +357,9 @@ fn download_builtin(
         }
         file.write_all(&buffer[..read])?;
         written += read as u64;
-        progress.set_message(&format!("Downloading {name} ({})", display_size(written)));
+        if progress.enabled() {
+            progress.set_message(&format!("Downloading {name} ({})", display_size(written)));
+        }
     }
     file.flush()?;
     Ok(())
@@ -418,9 +422,17 @@ fn aria2_executable(explicit: Option<&Path>) -> Result<Option<PathBuf>> {
             || fs::metadata(&path)
                 .map(|metadata| metadata.len())
                 .unwrap_or(0)
-                != ARIA2_BYTES.len() as u64
+                != ARIA2_SIZE
         {
-            fs::write(&path, ARIA2_BYTES)?;
+            let bytes = zstd::stream::decode_all(ARIA2_ZST)
+                .context("failed to decompress the embedded aria2 binary")?;
+            if bytes.len() as u64 != ARIA2_SIZE {
+                anyhow::bail!(
+                    "embedded aria2 size mismatch: expected {ARIA2_SIZE} bytes, got {}",
+                    bytes.len()
+                );
+            }
+            fs::write(&path, bytes)?;
         }
         Ok(Some(path))
     }
@@ -718,6 +730,13 @@ mod tests {
         assert_eq!(file_name("https://example.com/NUL"), "download.bin");
         assert_eq!(file_name("https://example.com/com1.txt"), "download.bin");
         assert_eq!(file_name("https://example.com/trailing."), "download.bin");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extracts_the_embedded_aria2_binary() {
+        let path = aria2_executable(None).unwrap().unwrap();
+        assert_eq!(fs::metadata(path).unwrap().len(), ARIA2_SIZE);
     }
 
     #[test]

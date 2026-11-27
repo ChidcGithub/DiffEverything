@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use anyhow::{Context, Result};
 use clap::builder::styling::{AnsiColor, Styles};
 use clap::{Parser, ValueEnum};
@@ -1417,7 +1419,8 @@ fn changed_paths_text(report: &diff_core::DiffReport) -> String {
         if path == "<root>" {
             out.push_str(&format!(
                 "{marker} {} -> {}\n",
-                report.left.path, report.right.path
+                render::sanitize_controls(&report.left.path),
+                render::sanitize_controls(&report.right.path)
             ));
         } else {
             out.push_str(&format!("{marker} {path}\n"));
