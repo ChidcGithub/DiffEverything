@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
@@ -214,15 +215,21 @@ fn run_with_timeout(
 fn decode_report(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xFF, 0xFE]) {
         let units: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .chunks(2)
+            .filter_map(|pair| match pair {
+                [first, second] => Some(u16::from_le_bytes([*first, *second])),
+                _ => None,
+            })
             .collect();
         return String::from_utf16_lossy(&units);
     }
     if bytes.starts_with(&[0xFE, 0xFF]) {
         let units: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .chunks(2)
+            .filter_map(|pair| match pair {
+                [first, second] => Some(u16::from_be_bytes([*first, *second])),
+                _ => None,
+            })
             .collect();
         return String::from_utf16_lossy(&units);
     }
