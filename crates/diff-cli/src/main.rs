@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::builder::styling::{AnsiColor, Styles};
 use clap::{Parser, ValueEnum};
 use diff_core::engine::DiffMode;
+use diff_core::model::TOOL_VERSION;
 use diff_core::progress::ProgressHandle;
 use diff_core::render::{self, RenderOptions};
 use diff_core::security::{self, ScanOutcome};
@@ -39,7 +40,7 @@ Use --style rich for the decorated terminal layout; --style plain keeps the comp
 #[command(
     name = "diff-everything",
     bin_name = "diff-everything",
-    version = env!("DIFF_VERSION"),
+    version = TOOL_VERSION,
     about = "Compare files, folders, archives, documents, media, links and Git histories",
     long_about = "DiffEverything compares files, folders, archives, documents, media, binaries, remote links and Git repositories. Formats are detected automatically and reports are rendered as ANSI, TUI, JSON, Markdown, HTML or unified diff.",
     after_help = CLI_AFTER_HELP,

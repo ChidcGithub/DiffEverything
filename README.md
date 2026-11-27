@@ -1,5 +1,7 @@
 # DiffEverything
 
+**Current release: 1.0.1 (Toyger)**
+
 A Rust CLI that compares heterogeneous files by normalizing them into one diff tree. It does not replace `diff`; it adds format-aware comparison and multiple report formats.
 
 The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff-pdf, nbdime, HDiffPatch and others. See [docs/REFERENCES.md](docs/REFERENCES.md).
@@ -287,7 +289,7 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 - Example terminal layout (colors omitted):
 
 ```text
-DiffEverything 1.0-a9e83ac8d2f5
+DiffEverything 1.0.1 (Toyger)
 ========================================================================
 left     fixtures\text\old.txt  [text | 105 B]
 right    fixtures\text\new.txt  [text | 160 B]

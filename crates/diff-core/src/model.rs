@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::path::Path;
 
 pub const TOOL_NAME: &str = "DiffEverything";
-pub const TOOL_VERSION: &str = env!("DIFF_VERSION");
+pub const TOOL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (Toyger)");
 
 /// Broad category of an input artifact. Handlers are selected from this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

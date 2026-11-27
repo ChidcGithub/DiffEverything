@@ -6,9 +6,17 @@
 - Rust 1.97.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
 
+## Release Verification (v1.0.1 - Toyger)
+
+On 2026-11-27, the `1.0.1 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 327 debug tests, 327 release tests, the release build and 189 smoke tests. The version is now the semantic package version plus the release codename; commit hashes are no longer embedded in the displayed version.
+
+Final release artifact: `target/release/diff-everything.exe`, 62,518,272 bytes (59.62 MiB), SHA-256 `58D0BEDC7BA1BC34E2B73025FACDCDE1E77EC976D5DA41006F28F81C25CE4BA4`.
+
+Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md` (including the bundled aria2 GPLv2/OpenSSL notices and all Rust crate licenses).
+
 ## Release Verification (v1.0-4596984fe5db)
 
-On 2026-11-27 13:27 CST, the local verification run passed fmt check, clippy, 279 tests, the release build and 189 smoke tests in sequence. Later commits add DEX, serialization, package, document and media tests, parallel comparison, progress, Kaspersky scanning, linked HTTP(S) downloads with embedded aria2, Git repository history comparison and a DEX performance fix; the current workspace test count is 327.
+On 2026-11-27 13:27 CST, the local verification run passed fmt check, clippy, 279 tests, the release build and 189 smoke tests in sequence. Later commits add DEX, serialization, package, document and media tests, parallel comparison, progress, Kaspersky scanning, linked HTTP(S) downloads with embedded aria2, Git repository history comparison, grouped CLI help, a rich terminal layout and a DEX performance fix; the current workspace test count is 327.
 
 Final release artifact: `target/release/diff-everything.exe`, 50,950,656 bytes (48.59 MiB), SHA-256 `5B4CA0427B707BB9B384D7FC3ABA4E748FBBD981D3CAA531EB35E4B9EBA48E7D`.
 
