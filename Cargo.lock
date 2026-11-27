@@ -1136,6 +1136,7 @@ dependencies = [
  "plist",
  "printpdf",
  "quick-xml",
+ "rayon",
  "rpm",
  "rusqlite",
  "rust_xlsxwriter",

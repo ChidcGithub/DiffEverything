@@ -19,7 +19,7 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 | Images / OCR | PNG / JPEG / GIF / WebP / BMP / TIFF / ICO / CUR | Pixel difference ratio, YIQ perceptual tolerance (`--image-threshold`), max channel delta, bounding box, changed regions, heatmap, side-by-side image, Tesseract OCR, scanned-PDF OCR |
 | Audio | MP3 / FLAC / OGG / M4A / WAV / AAC / OPUS / WMA | Duration, bitrate, sample rate, channels and tag metadata (lofty) |
 | Binary / patches | Any binary / directory | Hex line diff, exact differing byte count, first difference offset, single-file bsdiff, directory ZIP patch, pure-Rust HDIFF13 encode/apply (none/zstd/zlib/bzip2/lzma2), pure-Rust HDIFF19 directory patch encode/apply (fadler64 checksums, same-file dedup, optional compression, hpatchz-compatible) |
-| Android | `.apk`, binary `AndroidManifest.xml` | Recursive ZIP plus binary XML string-pool/chunk parsing; semantic element/namespace/attribute/typed-value diff; `--detail full -y` decompiles `classes.dex` to Java and disassembles embedded `.so` files; damaged manifests fall back to binary |
+| Android | `.apk`, binary `AndroidManifest.xml` | Recursive ZIP plus binary XML string-pool/chunk parsing; semantic element/namespace/attribute/typed-value diff; `--detail full -y` decompiles shared `classes.dex` classes to Java, summarizes large one-sided class sets by descriptor, and disassembles embedded `.so` files; damaged manifests fall back to binary |
 | Executables | ELF / PE / Mach-O / COFF | Architecture, entry point, section digest, file offset, symbols, imports; fat Mach-O slices; damaged files fall back to binary; `--detail full` adds normalized disassembly for ELF/PE/Mach-O and `.so` (y/n prompt, `-y` accepts) |
 | Other formats | Java class / JAR, WebAssembly, TTF / OTF / TTC / WOFF / WOFF2, Git index, OpenSSH public keys, ICO / CUR, IPK | Class, Wasm, font, Git index and key semantics; WOFF/WOFF2 unpacked to SFNT; damaged inputs fall back to binary |
 | Archives / images / packages | ZIP (bzip2/LZMA/zstd), 7Z, TAR, TAR.GZ/BZ2/XZ/ZST/LZ4, CPIO, CAB, XAR, AR, IPK, GZ, ZST, BZ2, XZ, LZ4, DEB, RPM, ISO | Recursive unpacking and per-entry dispatch; DEB (ar) and RPM (header + payload); ISO9660 trees; CAB (MSZIP/LZX), XAR, AR and TAR links; single-file compressed inputs are decompressed and compared |
@@ -200,7 +200,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 279 Rust tests (unit + integration + CLI)
+# 280 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint

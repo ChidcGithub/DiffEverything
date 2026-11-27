@@ -28,6 +28,7 @@ pdf-extract = "0.12.1"
 plist.workspace = true
 printpdf = { version = "0.13.0", default-features = false, features = ["images", "png"] }
 quick-xml = "0.42.0"
+rayon.workspace = true
 rpm.workspace = true
 scraper = "0.29.0"
 serde.workspace = true

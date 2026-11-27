@@ -16,6 +16,7 @@ clap = { version = "4.5", features = ["derive"] }
 encoding_rs = "0.8"
 plist = "1.10"
 quick-xml = "0.42"
+rayon = "1"
 rpm = { version = "0.30", default-features = false, features = ["payload", "gzip-compression", "xz-compression", "zstd-compression"] }
 iso9660 = "0.1"
 liblzma = "0.4"

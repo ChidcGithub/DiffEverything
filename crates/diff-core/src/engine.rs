@@ -1169,22 +1169,13 @@ impl DiffEngine {
             ));
             return self.compare_binary_bytes(label, left, right, ctx);
         }
-        match (
-            crate::diff::dex::decompile_dex(left),
-            crate::diff::dex::decompile_dex(right),
+        match crate::diff::dex::compare_dex(
+            left,
+            right,
+            self.options.context,
+            self.options.max_hunks,
         ) {
-            (Ok(left_source), Ok(right_source)) => {
-                let mut diff = text::compare_text_options(
-                    &left_source,
-                    &right_source,
-                    self.options.context,
-                    self.options.max_hunks,
-                    false,
-                    false,
-                );
-                diff.format = "dex-java".to_string();
-                diff.encoding_left = "utf-8".to_string();
-                diff.encoding_right = "utf-8".to_string();
+            Ok(diff) => {
                 ctx.summary.lines_added += diff.added_lines;
                 ctx.summary.lines_removed += diff.removed_lines;
                 let status = if diff.added_lines == 0 && diff.removed_lines == 0 {
@@ -1194,11 +1185,7 @@ impl DiffEngine {
                 };
                 DiffNode::new(label, status, DiffBody::Text(diff))
             }
-            (left_result, right_result) => {
-                let reason = left_result
-                    .err()
-                    .or_else(|| right_result.err())
-                    .unwrap_or_default();
+            Err(reason) => {
                 ctx.warn(format!(
                     "{}: DEX decompilation failed ({reason}); falling back to binary",
                     display_label(label)

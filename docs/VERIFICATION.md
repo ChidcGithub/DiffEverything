@@ -6,9 +6,9 @@
 - Rust 1.97.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
 
-## Latest Verification
+## Release Verification (v1.0-4596984fe5db)
 
-On 2026-11-27 13:27 CST, the local verification run passed fmt check, clippy, 279 tests, the release build and 189 smoke tests in sequence.
+On 2026-11-27 13:27 CST, the local verification run passed fmt check, clippy, 279 tests, the release build and 189 smoke tests in sequence. Later commits add one DEX comparison test and a performance fix; the current workspace test count is 280.
 
 Final release artifact: `target/release/diff-everything.exe`, 50,950,656 bytes (48.59 MiB), SHA-256 `5B4CA0427B707BB9B384D7FC3ABA4E748FBBD981D3CAA531EB35E4B9EBA48E7D`.
 
