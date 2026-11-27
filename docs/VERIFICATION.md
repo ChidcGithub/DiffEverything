@@ -10,7 +10,7 @@
 
 On 2026-11-27, the `1.0.1 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 330 debug tests, 330 release tests, the release build and 189 smoke tests. The short display version is now the semantic package version plus the release codename; `--version` additionally reports the build commit, profile, target and toolchain metadata.
 
-Final release artifact: `target/release/diff-everything.exe`, 55,503,360 bytes (52.93 MiB), SHA-256 `E0F70822BA58CA56ACBD95D57E7F57CF4634CB55371D8887C771D546F6E83CC9`. The binary was built from code commit `d74c6b9b5a55`; `--version` reports that commit together with the profile, target, rustc version, license, repository and feature list.
+Final release artifact: `target/release/diff-everything.exe`, 55,503,360 bytes (52.93 MiB), SHA-256 `CD116F7D2A2D138D650BF5B6B9E7E904B9EEED6DAB362B1DBED6AEDDA7A92CEF`. The binary was built from code commit `0c5ad7163d00`; `--version` reports that commit together with the profile, target, rustc version, license, repository and feature list.
 
 The release profile (fat LTO, one codegen unit, symbol stripping) and the zstd-compressed aria2 asset reduced the executable from 62,518,272 bytes to 55,503,360 bytes, an 11.2% reduction, while the parallel entry comparison was deduplicated and allocation-heavy paths were removed.
 
