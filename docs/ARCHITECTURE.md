@@ -159,7 +159,7 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - Pixel differences are computed by `diff-core/src/diff/image.rs`.
 - Outputs include `heatmaps/`, `side-by-side/`, `overlays/`, `report.html`, `report.pdf`, raster overlay `report-overlay.pdf`, and `report-vector.pdf`, which appends vector red rectangles to the original PDF content stream via lopdf.
 - `--ocr` calls Tesseract for images. For PDFs, pages are rendered with `pdftoppm`, OCR'd page by page, then compared as text.
-- Tool paths can be set with `--tesseract` / `--pdftoppm` / environment variables; portable builds are downloaded by `scripts/fetch-testdata.ps1`.
+- Tool paths can be set with `--tesseract` / `--pdftoppm` / environment variables; portable builds can be installed separately.
 
 ## Remote Input
 
@@ -167,7 +167,7 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - Authentication comes from URL user info or `--remote-user` / `--remote-password`.
 - Files are downloaded into `tempfile::TempDir`, kept alive during comparison, and removed afterward.
 - Report paths keep the original URL; sessions store the original URL.
-- Tests use a local tiny_http WebDAV/HTTP server and `scripts/sftp-test-server.py` (asyncssh).
+- Tests use local tiny_http WebDAV/HTTP, asyncssh SFTP and impacket SMB test servers when those maintainer-local helpers are available.
 
 ## Directory Sync and Sessions
 

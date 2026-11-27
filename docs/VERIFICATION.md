@@ -8,7 +8,7 @@
 
 ## Latest Verification
 
-On 2026-11-27 13:27 CST, `scripts/verify-all.ps1` passed fmt check, clippy, 279 tests, the release build and 189 smoke tests in sequence.
+On 2026-11-27 13:27 CST, the local verification run passed fmt check, clippy, 279 tests, the release build and 189 smoke tests in sequence.
 
 Final release artifact: `target/release/diff-everything.exe`, 50,950,656 bytes (48.59 MiB), SHA-256 `5B4CA0427B707BB9B384D7FC3ABA4E748FBBD981D3CAA531EB35E4B9EBA48E7D`.
 
@@ -46,7 +46,7 @@ Finished `release` profile [optimized]
 ```
 
 ```text
-powershell -File scripts\smoke-test.ps1 -Exe .\target\release\diff-everything.exe
+smoke test
 189 passed, 0 failed
 ```
 
@@ -70,7 +70,7 @@ Smoke coverage:
 
 ## Real Test Files
 
-`scripts/fetch-testdata.ps1` downloads into `testdata/external/`; `MANIFEST.csv` records URL, SHA-256 and size. The script also downloads optional tools: poppler (`pdftoppm`) and portable Tesseract (with tessdata). Sources include:
+The maintainer-local fixture download script downloads into `testdata/external/`; `MANIFEST.csv` records URL, SHA-256 and size. It also downloads optional tools: poppler (`pdftoppm`) and portable Tesseract (with tessdata). Sources include:
 
 - W3C PDF test files
 - Mozilla pdf.js test PDFs
@@ -125,12 +125,12 @@ Sources, licenses, files read and feature mappings are in [REFERENCES.md](REFERE
 ## Known Boundaries
 
 - TUI is an interactive terminal viewer.
-- PDF uses the text layer by default; visual diff requires optional poppler and OCR requires optional Tesseract (the script downloads portable builds).
+- PDF uses the text layer by default; visual diff requires optional poppler and OCR requires optional Tesseract (portable builds can be installed separately).
 - WebDAV / HTTP(S) / SFTP / SMB file input is supported; WebDAV / SFTP / SMB support recursive directories.
 - `--sync` supports local directories only; remote inputs are rejected before download so temporary copies are not modified.
 - `--external-tool` receives resolved local paths; remote inputs are downloaded to a temporary directory first, and the external program sees temporary paths.
 - ZIP LZMA (method 14) is decoded by rebuilding an LZMA-Alone header; unsupported or corrupted entries fall back to binary.
-- SMB integration tests use a local SMB2 share provided by `scripts/smb-test-server.py` (Python impacket).
+- SMB integration tests use a local SMB2 share provided by a maintainer-local Python impacket test server.
 - SFTP optionally uses `--sftp-known-hosts`: missing or mismatched host keys are rejected. Verification is still off by default for temporary test servers.
 - Legacy `.doc` / `.ppt` fall back to binary; `.xls` / `.ods` are supported by calamine.
 - Encrypted ZIPs and unknown compression methods fall back to binary with a warning.

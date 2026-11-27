@@ -227,8 +227,8 @@ Registry export `.reg` files are compared as text; OCR is implemented for images
 ## Test Comparison
 
 - `cargo test --workspace`: 279 tests;
-- `scripts/smoke-test.ps1`: 189 end-to-end cases;
-- `scripts/fetch-testdata.ps1`: downloads real test files from W3C, Mozilla, python-docx, calamine, plotly, Kubernetes, w3schools, jsonplaceholder, picsum, GNU, Debian, Arch Linux, Fedora, CentOS and Open Diff;
+- maintainer-local smoke-test suite: 189 end-to-end cases;
+- maintainer-local fixture download script: downloads real test files from W3C, Mozilla, python-docx, calamine, plotly, Kubernetes, w3schools, jsonplaceholder, picsum, GNU, Debian, Arch Linux, Fedora, CentOS and Open Diff;
 - `testdata/external/MANIFEST.csv`: URL, SHA-256, size.
 
 Third-party projects are used for research and feature comparison only. Reusing their code directly would require complying with the corresponding license and cannot be merged into MIT-licensed code without permission.

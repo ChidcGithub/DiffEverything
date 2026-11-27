@@ -1,6 +1,6 @@
 # XAR fixtures
 
-Generated deterministically by `scripts/make-xar-fixtures.py`:
+Generated deterministically by a maintainer-local fixture generator:
 
 - `left.xar` / `right.xar`: nested directories, modified/added/removed files.
 - `mixed-left.xar` / `mixed-right.xar`: same files stored with zlib, bzip2,

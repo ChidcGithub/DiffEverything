@@ -1692,6 +1692,10 @@ fn sftp_known_hosts_verification() {
         listener.local_addr().unwrap().port()
     };
     let script = workspace_path("scripts/sftp-test-server.py");
+    if !script.is_file() {
+        eprintln!("skipping SFTP test: local test server script not available");
+        return;
+    }
     let root = workspace_path("fixtures/text");
     let temp = tempfile::tempdir().unwrap();
     let host_key_out = temp.path().join("host-key.txt");
@@ -1959,6 +1963,10 @@ fn sftp_remote_inputs_with_local_server() {
         listener.local_addr().unwrap().port()
     };
     let script = workspace_path("scripts/sftp-test-server.py");
+    if !script.is_file() {
+        eprintln!("skipping SFTP test: local test server script not available");
+        return;
+    }
     let root = workspace_path("fixtures/text");
     let mut child = match Command::new("python")
         .args([
@@ -2014,6 +2022,10 @@ fn smb_remote_inputs_with_local_server() {
         listener.local_addr().unwrap().port()
     };
     let script = workspace_path("scripts/smb-test-server.py");
+    if !script.is_file() {
+        eprintln!("skipping SMB test: local test server script not available");
+        return;
+    }
     let root = workspace_path("fixtures/dir");
     let mut child = match Command::new("python")
         .args([
@@ -2084,6 +2096,10 @@ fn sftp_remote_directories_with_local_server() {
         listener.local_addr().unwrap().port()
     };
     let script = workspace_path("scripts/sftp-test-server.py");
+    if !script.is_file() {
+        eprintln!("skipping SFTP test: local test server script not available");
+        return;
+    }
     let root = workspace_path("fixtures/dir");
     let mut child = match Command::new("python")
         .args([

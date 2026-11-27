@@ -1004,7 +1004,7 @@ fn resolve_tesseract(
     } else {
         find_local_tool("tesseract").ok_or_else(|| {
             anyhow::anyhow!(
-                "tesseract was not found. Download the portable build with scripts/fetch-testdata.ps1, put tesseract on PATH, set TESSERACT_PATH, or pass --tesseract"
+                "tesseract was not found. Install Tesseract, put it on PATH, set TESSERACT_PATH, or pass --tesseract"
             )
         })?
     };

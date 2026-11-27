@@ -121,10 +121,6 @@ These are explicit scope choices, not CLI feature defects:
 - Regular HTML reports have no external resources; page images in PDF visual `report.html` are embedded as base64 PNGs.
 - Unknown pickle globals are extracted as readable strings; corrupted pickles return a structured object with `$pickle_error` / `$bytes_hash` / `$readable_strings`.
 
-## One-Command Verification
+## Local Verification
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-all.ps1
-```
-
-The script runs fmt check, clippy, the full test suite, the release build and 189 smoke tests in sequence.
+The maintainer-local verification script runs fmt check, clippy, the full test suite, the release build and 189 smoke tests in sequence. It is not part of the public repository.
