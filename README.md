@@ -299,7 +299,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 339 Rust tests (unit + integration + CLI)
+# 340 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -339,7 +339,7 @@ elapsed  7 ms
         2 | +- new text
 ```
 
-- Packed/protected executables and APKs are detected before comparison (UPX, ASPack, Themida, VMProtect, Enigma, MPRESS, PECompact, NSPack, Armadillo, Obsidium, PELock, tElock, MoleBox, BoxedApp, 360 Jiagu, Tencent Legu, Bangcle, Alibaba, Baidu, Naqu and NetEase shells). The CLI lists the detected packer and warns that analyzing or unpacking it may violate its license or applicable law, then asks whether to continue. `-y` accepts; non-interactive runs without `-y` stop with exit code `2`.
+- Packed/protected executables and APKs are detected before comparison from executable section names and APK shell-library entries (UPX, ASPack, Themida, VMProtect, Enigma, MPRESS, PECompact, NSPack, Armadillo, Obsidium, PELock, tElock, MoleBox, BoxedApp, 360 Jiagu, Tencent Legu, Bangcle, Alibaba, Baidu, Naqu and NetEase shells). Raw strings inside the binary are not treated as evidence, so the tool's own signature table cannot trigger a false positive. The CLI lists the detected packer and warns that analyzing or unpacking it may violate its license or applicable law, then asks whether to continue. `-y` accepts; non-interactive runs without `-y` stop with exit code `2`.
 - When more than 99% of a single file or top-level container changed, the report adds a `COMPLETELY DIFFERENT` verdict. Text and binary files use `(changed bytes / left bytes + changed bytes / right bytes) / 2`; images, tables, workbooks, notebooks, audio and containers use semantic ratios (pixels, rows, cells, windows or entries). JSON exposes it as `completely_different`.
 - `--security-scan` uses only Kaspersky's local `avp.com` interface. Common installation paths are auto-detected; `--kaspersky <FILE>` overrides detection. Scans use `/i0` (report only), so files are never disinfected or deleted. Detected threats abort with exit code `2`; a missing Kaspersky installation or stopped service produces a warning and the diff continues. `--scan-timeout` bounds each scan.
 - Linked inputs (HTTP(S) files and Git repository URLs) are scanned automatically with the same local Kaspersky interface. `--no-security-scan` disables this default; `--security-scan` still enables it manually for any comparison.

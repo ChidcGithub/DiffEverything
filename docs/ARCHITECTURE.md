@@ -220,7 +220,7 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 
 ## Packed Application Detection
 
-- `packers.rs` inspects executable section names and strong signatures (UPX, ASPack, Themida, VMProtect, WinLicense, Enigma, MPRESS, PECompact, NSPack, Armadillo, Obsidium, PELock, tElock, MoleBox, BoxedApp, RLPack). APK/AAB inputs are checked for known shell libraries (360 Jiagu, Tencent Legu, Bangcle, Alibaba, Baidu, Naqu, NetEase).
+- `packers.rs` inspects executable section names (UPX0/UPX1, .aspack, .themida, .vmp0/.vmp1, .enigma*, .mpress*, .pec, .nsp*, .armadillo, .obsidium, .pelock, .telock, .molebox, .boxed, .rlpack). APK/AAB inputs are checked for known shell libraries (360 Jiagu, Tencent Legu, Bangcle, Alibaba, Baidu, Naqu, NetEase). Raw embedded strings are intentionally not used as evidence, preventing the tool's own signature table from flagging its executable.
 - Detection reads at most 64 MiB; larger executables are sampled at the head and tail so detection stays bounded.
 - The CLI prints the detected packer and evidence, warns about license/legal implications, and prompts `Continue analysis? [y/N]`. `-y` approves; non-interactive runs without `-y` exit 2. Accepted detections are appended to report warnings.
 

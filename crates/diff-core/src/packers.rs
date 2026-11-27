@@ -14,24 +14,6 @@ pub struct PackerInfo {
 
 const DETECTION_READ_LIMIT: u64 = 64 * 1024 * 1024;
 
-const SIGNATURES: &[(&[u8], &str)] = &[
-    (b"UPX!", "UPX"),
-    (b"ASPack", "ASPack"),
-    (b"Themida", "Themida"),
-    (b"VMProtect", "VMProtect"),
-    (b"WinLicense", "WinLicense"),
-    (b"MPRESS", "MPRESS"),
-    (b"PECompact", "PECompact"),
-    (b"NSPack", "NSPack"),
-    (b"Armadillo", "Armadillo"),
-    (b"Obsidium", "Obsidium"),
-    (b"PELock", "PELock"),
-    (b"tElock", "tElock"),
-    (b"MoleBox", "MoleBox"),
-    (b"Enigma protector", "Enigma Protector"),
-    (b"BoxedApp", "BoxedApp"),
-];
-
 pub fn detect_packers(path: &Path) -> Vec<PackerInfo> {
     if !path.is_file() {
         return Vec::new();
@@ -87,14 +69,6 @@ pub fn detect_packers_bytes(bytes: &[u8]) -> Vec<PackerInfo> {
                     .entry(packer.to_string())
                     .or_insert_with(|| format!("section {name}"));
             }
-        }
-    }
-
-    for (signature, packer) in SIGNATURES {
-        if contains(bytes, signature) {
-            found
-                .entry((*packer).to_string())
-                .or_insert_with(|| format!("signature {:?}", String::from_utf8_lossy(signature)));
         }
     }
 
@@ -177,22 +151,22 @@ fn packer_for_apk_entry(name: &str) -> Option<&'static str> {
     None
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty()
-        && haystack
-            .windows(needle.len())
-            .any(|window| window == needle)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
 
     #[test]
-    fn detects_upx_signature() {
-        let info = detect_packers_bytes(b"MZ\0\0UPX! some payload");
-        assert!(info.iter().any(|item| item.name == "UPX"), "{info:?}");
+    fn detects_packer_sections() {
+        assert_eq!(packer_for_section("UPX0"), Some("UPX"));
+        assert_eq!(packer_for_section(".vmp0"), Some("VMProtect"));
+        assert_eq!(packer_for_section(".aspack"), Some("ASPack"));
+    }
+
+    #[test]
+    fn embedded_signature_strings_are_not_evidence() {
+        let info = detect_packers_bytes(b"MZ\0\0UPX! ASPack Themida VMProtect MPRESS");
+        assert!(info.is_empty(), "{info:?}");
     }
 
     #[test]

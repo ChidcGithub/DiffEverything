@@ -8,17 +8,9 @@
 
 ## Release Verification (v1.0.3 - Toyger)
 
-On 2026-11-27, the `1.0.3 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 339 debug tests, 339 release tests, the optimized `dist` build and 189 smoke tests. It adds `--support` format/capability discovery, removes the feature list from `--version`, keeps the >99% average byte-ratio `COMPLETELY DIFFERENT` rule, consolidates diff-core integration tests into one link target, and adds the fast release profile.
+On 2026-11-27, the `1.0.3 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 340 debug tests, 340 release tests, the optimized `dist` build and 189 smoke tests. It adds `--support` format/capability discovery, removes the feature list from `--version`, keeps the >99% average byte-ratio `COMPLETELY DIFFERENT` rule, consolidates diff-core integration tests into one link target, and adds the fast release profile. Packed-application detection was corrected to use PE/ELF section names and APK shell-library entries rather than raw signature strings, eliminating false positives from the tool's own string table.
 
 Final release artifact: `target/dist/diff-everything.exe`, 55,601,664 bytes (53.03 MiB), SHA-256 `CF952A41C98944EC12B72214E4D27D2E2B5763AFAFEB6EE12CA1E49BA12F36BB`. The binary was built from code commit `a607f8c8521f` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
-
-Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md`.
-
-## Release Verification (v1.0.2.1 - Toyger)
-
-On 2026-11-27, the `1.0.2.1 (Toyger)` hotfix passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 339 debug tests, 339 release tests, the optimized `dist` build and 189 smoke tests. It changes `COMPLETELY DIFFERENT` to `>99%` using the average changed-byte fraction for text/binary (semantic ratios for other formats), adds `--support` format/capability discovery, removes the feature list from `--version`, consolidates diff-core integration tests into one link target, and adds the fast release profile.
-
-Final release artifact: `target/dist/diff-everything.exe`, 55,574,016 bytes (53.00 MiB), SHA-256 `4B6127060EC70EE5F2C8281CBE3DC5070EDBAB5C9E45B4A7692425408DD17424`. The binary was built from code commit `31334bbb1b2c` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
 
 Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md`.
 
@@ -48,7 +40,7 @@ Final release artifact: `target/release/diff-everything.exe`, 50,950,656 bytes (
 
 ## Extended Format Verification
 
-On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 339 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
+On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 340 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
 
 ## Linked Input Verification
 
@@ -73,7 +65,7 @@ Manual release verification on Windows also downloaded two HTTP files with the e
 - `ansi_output_sanitizes_control_characters` feeds a file containing an ANSI escape sequence and verifies that the report replaces it instead of emitting a live terminal control sequence.
 - `no_file_size_limit_disables_detailed_diff_limit` verifies the streaming fallback at `--max-file-bytes 1`, the full text diff with `--no-file-size-limit`, and the exit-2 conflict when both options are supplied.
 - `entry_limits_can_be_removed_for_directories_and_archives` verifies `--max-entries 1` truncation for both directories and ZIP archives, full traversal with `--no-entry-limit`, the global `--no-limits` path, and its conflict with an individual limit flag.
-- `detects_upx_signature` and `detects_apk_packer_library` cover executable signature and APK shell-library detection; `packed_executables_require_legal_confirmation` verifies the non-interactive exit-2 block and `-y` override.
+- `detects_packer_sections` covers section-name detection, `embedded_signature_strings_are_not_evidence` prevents self-detection from raw strings, and `detects_apk_packer_library` covers APK shell libraries. `packed_executables_require_legal_confirmation` verifies the non-interactive exit-2 block and `-y` override using a PE stub with a UPX section name.
 - `completely_different_is_reported_above_99_percent` verifies the >99% JSON flag and ANSI verdict, and that a 5% change remains a normal diff.
 - `byte_difference_ratio_averages_both_sides` verifies the text/binary formula `(changed/left + changed/right)/2`, including unequal lengths and empty inputs.
 - `extracts_the_embedded_aria2_binary` verifies that the zstd-compressed Windows asset decompresses to the expected 5,649,408-byte executable.
@@ -87,15 +79,15 @@ Integration tests are consolidated under one `tests/integration.rs` target; the 
 cargo test --workspace
 12 CLI binary unit tests
 74 CLI tests
-147 diff-core unit tests
+148 diff-core unit tests
 106 diff-core integration tests (one linked target: engine 7, extended formats 21,
     formats 58, robustness 15, folder merge 3, folder patch 2)
-= 339 tests, all passing
+= 340 tests, all passing
 ```
 
 ```text
 cargo test --workspace --release
-(339 tests, all passing)
+(340 tests, all passing)
 ```
 
 ```text

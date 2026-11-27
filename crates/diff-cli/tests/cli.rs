@@ -247,6 +247,15 @@ fn concise_detail_suppresses_equal_context() {
     );
 }
 
+fn pe_with_section_name(bytes: &[u8], name: &[u8; 8]) -> Vec<u8> {
+    let mut bytes = bytes.to_vec();
+    let pe = u32::from_le_bytes(bytes[0x3c..0x40].try_into().unwrap()) as usize;
+    let optional_size = u16::from_le_bytes(bytes[pe + 20..pe + 22].try_into().unwrap()) as usize;
+    let section_table = pe + 24 + optional_size;
+    bytes[section_table..section_table + 8].copy_from_slice(name);
+    bytes
+}
+
 fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
     use std::io::Write as _;
     let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -1722,12 +1731,11 @@ fn entry_limits_can_be_removed_for_directories_and_archives() {
 
 #[test]
 fn packed_executables_require_legal_confirmation() {
-    let source = std::fs::read(fixture("executable/hello-old")).unwrap();
+    let source = std::fs::read(fixture("executable/diffoscope-test1.exe")).unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let left = dir.path().join("packed-left");
-    let right = dir.path().join("packed-right");
-    let mut packed = source;
-    packed.extend_from_slice(b"\nUPX!");
+    let left = dir.path().join("packed-left.exe");
+    let right = dir.path().join("packed-right.exe");
+    let packed = pe_with_section_name(&source, b"UPX0\0\0\0\0");
     std::fs::write(&left, &packed).unwrap();
     std::fs::write(&right, &packed).unwrap();
 
