@@ -6,6 +6,14 @@
 - Rust 1.97.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
 
+## Release Verification (v1.0.2.1 - Toyger)
+
+On 2026-11-27, the `1.0.2.1 (Toyger)` hotfix passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 337 debug tests, 337 release tests, the optimized `dist` build and 189 smoke tests. It changes `COMPLETELY DIFFERENT` to `>99%` using the average changed-byte fraction for text/binary (semantic ratios for other formats), consolidates diff-core integration tests into one link target, and adds the fast release profile.
+
+Final release artifact: `target/dist/diff-everything.exe`, 55,574,016 bytes (53.00 MiB), SHA-256 `4B6127060EC70EE5F2C8281CBE3DC5070EDBAB5C9E45B4A7692425408DD17424`. The binary was built from code commit `31334bbb1b2c` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
+
+Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md`.
+
 ## Release Verification (v1.0.2 - Toyger)
 
 On 2026-11-27, the `1.0.2 (Toyger)` patch release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 336 debug tests, 336 release tests, the release build and 189 smoke tests. It adds `--no-entry-limit`/`--no-limits`, packed/protected application detection with a legal-risk confirmation, and the >90% `COMPLETELY DIFFERENT` verdict.
