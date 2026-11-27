@@ -1683,11 +1683,17 @@ impl DiffEngine {
         let mut keys = keys;
         keys.truncate(limit);
         if truncated {
+            let skipped = if kind == "directory" {
+                "files"
+            } else {
+                "entries"
+            };
             ctx.warn(format!(
-                "{}: {} entry limit ({}) reached; some entries were skipped",
+                "{}: {} entry limit ({}) reached; some {} were skipped",
                 display_label(label),
                 kind,
-                limit
+                limit,
+                skipped
             ));
         }
         if let Some(progress) = &self.progress
