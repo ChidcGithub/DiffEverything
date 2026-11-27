@@ -6,6 +6,14 @@
 - Rust 1.97.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
 
+## Release Verification (v1.0.3 - Toyger)
+
+On 2026-11-27, the `1.0.3 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 339 debug tests, 339 release tests, the optimized `dist` build and 189 smoke tests. It adds `--support` format/capability discovery, removes the feature list from `--version`, keeps the >99% average byte-ratio `COMPLETELY DIFFERENT` rule, consolidates diff-core integration tests into one link target, and adds the fast release profile.
+
+Final release artifact: `target/dist/diff-everything.exe`, 55,601,664 bytes (53.03 MiB), SHA-256 `CF952A41C98944EC12B72214E4D27D2E2B5763AFAFEB6EE12CA1E49BA12F36BB`. The binary was built from code commit `a607f8c8521f` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
+
+Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md`.
+
 ## Release Verification (v1.0.2.1 - Toyger)
 
 On 2026-11-27, the `1.0.2.1 (Toyger)` hotfix passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 339 debug tests, 339 release tests, the optimized `dist` build and 189 smoke tests. It changes `COMPLETELY DIFFERENT` to `>99%` using the average changed-byte fraction for text/binary (semantic ratios for other formats), adds `--support` format/capability discovery, removes the feature list from `--version`, consolidates diff-core integration tests into one link target, and adds the fast release profile.
