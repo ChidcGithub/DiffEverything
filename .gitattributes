@@ -1,0 +1,5 @@
+# Keep binary fixtures byte-exact on every platform.
+*.bin -text
+*.hdiff -text
+*.patch -text
+*.git-index -text
