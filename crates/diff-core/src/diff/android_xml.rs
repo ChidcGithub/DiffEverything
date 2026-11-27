@@ -172,10 +172,12 @@ fn decode_utf16_string(data: &[u8]) -> Result<String, String> {
         .checked_mul(2)
         .and_then(|bytes| data.get(start..start + bytes))
         .ok_or_else(|| "truncated Android UTF-16 string".to_string())?;
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
+    let mut units = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks(2) {
+        if let [first, second] = pair {
+            units.push(u16::from_le_bytes([*first, *second]));
+        }
+    }
     Ok(char::decode_utf16(units)
         .map(|value| value.unwrap_or('\u{fffd}'))
         .collect())
