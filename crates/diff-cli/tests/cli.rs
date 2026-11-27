@@ -1499,6 +1499,28 @@ fn help_is_grouped_and_includes_examples() {
 }
 
 #[test]
+fn version_reports_codename_and_build_info() {
+    let long = run_str(&["--version"]);
+    assert_eq!(long.status.code(), Some(0), "{}", stderr(&long));
+    let text = stdout(&long);
+    for field in [
+        "1.0.1 (Toyger)",
+        "Commit:",
+        "Build:",
+        "Rust:",
+        "License:",
+        "Repository:",
+        "Features:",
+    ] {
+        assert!(text.contains(field), "missing {field}\n{text}");
+    }
+
+    let short = run_str(&["-V"]);
+    assert_eq!(short.status.code(), Some(0), "{}", stderr(&short));
+    assert_eq!(stdout(&short).trim(), "diff-everything 1.0.1 (Toyger)");
+}
+
+#[test]
 fn rich_style_adds_banner_rules_and_line_numbers() {
     let old = fixture("text/old.txt");
     let new = fixture("text/new.txt");

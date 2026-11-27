@@ -48,6 +48,9 @@ cargo build --release -p diff-cli
 Common examples:
 
 ```powershell
+# Version, codename and build metadata (-V prints the short version only)
+.\target\release\diff-everything.exe --version
+
 # Text
 .\target\release\diff-everything.exe fixtures\text\old.txt fixtures\text\new.txt
 
@@ -167,10 +170,24 @@ Common examples:
 .\target\release\diff-everything.exe smb://user:pass@host:445/share/old.txt smb://host/share/new.txt --remote-user user --remote-password pass
 ```
 
+`--version` prints the codename plus build metadata; `-V` prints only the first line:
+
+```text
+diff-everything 1.0.1 (Toyger)
+Commit:     <git-commit>
+Build:      release / <target-triple>
+Rust:       <rustc-version>
+License:    MIT
+Repository: https://github.com/ChidcGithub/DiffEverything
+Features:   linked files, Git history, aria2, Kaspersky, rich terminal UI
+```
+
 ## CLI Options
 
 | Option | Description |
 |---|---|
+| **General** | |
+| `-h, --help` / `-V, --version` | Grouped help / short version; `--version` adds commit, build, Rust, license, repository and feature metadata |
 | **Input and comparison** | |
 | `<LEFT>` `<RIGHT>` | Two files or directories; HTTP(S) file links, Git repository URLs, and WebDAV / SFTP / SMB URLs are also accepted |
 | `--git-history` | Compare the refs, HEAD and commit metadata of two Git repositories or repository URLs (auto-enabled for two `.git` URLs) |
@@ -268,7 +285,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 327 Rust tests (unit + integration + CLI)
+# 328 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint

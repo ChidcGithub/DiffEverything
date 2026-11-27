@@ -216,6 +216,12 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - Kaspersky integration auto-detects `avp.com` under common installation paths, checks the `AVP*` service state, and runs `SCAN ... /i0 /R:<temp-report>`. `/i0` is report-only: no disinfection or deletion. Threats abort with exit code `2`; a missing installation or stopped service is a warning. Reports are decoded from UTF-8/UTF-16 and parsed for detection lines.
 - Linked inputs (HTTP(S) files and Git repositories) run the Kaspersky scan by default after download/clone. `--no-security-scan` skips it; `--security-scan` forces a scan for local comparisons.
 
+## Version and Build Metadata
+
+- The package version is `1.0.1`; the release codename is `Toyger`.
+- `diff-cli/build.rs` captures the git commit, Cargo target/profile and `rustc --version` at compile time. Missing git data falls back to `unknown`.
+- `-V` / `version` exposes the short semantic version; `--version` / `long_version` appends commit, build profile/target, rustc, license, repository and feature metadata. Build metadata is display-only and does not affect diff behavior.
+
 ## Performance and Safety Boundaries
 
 - Files below `max_file_bytes` are read into memory at once.

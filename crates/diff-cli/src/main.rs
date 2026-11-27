@@ -25,6 +25,29 @@ const HELP_STYLES: Styles = Styles::styled()
     .invalid(AnsiColor::BrightRed.on_default())
     .error(AnsiColor::BrightRed.on_default().bold());
 
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (Toyger)\n",
+    "Commit:     ",
+    env!("BUILD_COMMIT"),
+    "\n",
+    "Build:      ",
+    env!("BUILD_PROFILE"),
+    " / ",
+    env!("BUILD_TARGET"),
+    "\n",
+    "Rust:       ",
+    env!("BUILD_RUSTC"),
+    "\n",
+    "License:    ",
+    env!("CARGO_PKG_LICENSE"),
+    "\n",
+    "Repository: ",
+    env!("CARGO_PKG_REPOSITORY"),
+    "\n",
+    "Features:   linked files, Git history, aria2, Kaspersky, rich terminal UI"
+);
+
 const CLI_AFTER_HELP: &str = "\
 Examples:
   diff-everything old.txt new.txt
@@ -41,6 +64,7 @@ Use --style rich for the decorated terminal layout; --style plain keeps the comp
     name = "diff-everything",
     bin_name = "diff-everything",
     version = TOOL_VERSION,
+    long_version = LONG_VERSION,
     about = "Compare files, folders, archives, documents, media, links and Git histories",
     long_about = "DiffEverything compares files, folders, archives, documents, media, binaries, remote links and Git repositories. Formats are detected automatically and reports are rendered as ANSI, TUI, JSON, Markdown, HTML or unified diff.",
     after_help = CLI_AFTER_HELP,

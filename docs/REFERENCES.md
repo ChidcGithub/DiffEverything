@@ -230,7 +230,7 @@ The Windows build bundles aria2 1.37.0 (`crates/diff-cli/assets/aria2c.exe`) for
 
 ## Test Comparison
 
-- `cargo test --workspace`: 327 tests;
+- `cargo test --workspace`: 328 tests;
 - maintainer-local smoke-test suite: 189 end-to-end cases;
 - maintainer-local fixture download script: downloads real test files from W3C, Mozilla, python-docx, calamine, plotly, Kubernetes, w3schools, jsonplaceholder, picsum, GNU, Debian, Arch Linux, Fedora, CentOS and Open Diff;
 - `testdata/external/MANIFEST.csv`: URL, SHA-256, size.
