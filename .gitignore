@@ -1,0 +1,11 @@
+/target
+**/*.rs.bk
+*.pdb
+.DS_Store
+/references
+/testdata/external
+/testdata/tools
+/smoke-test.log
+/smoke-test-release.log
+/testdata-fetch.log
+/fixtures/binary/change.patch

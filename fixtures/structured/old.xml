@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog>
+  <book id="1">
+    <title>Rust in Action</title>
+    <price>30</price>
+  </book>
+  <book id="2">
+    <title>Diff Everything</title>
+    <price>20</price>
+  </book>
+</catalog>

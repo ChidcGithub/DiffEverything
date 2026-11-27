@@ -1,0 +1,11 @@
+name: DiffEverything
+version: 0.2.0
+features:
+  - text
+  - binary
+  - image
+  - yaml
+  - xml
+settings:
+  theme: dark
+  max_file_mb: 128

@@ -1,0 +1,5 @@
+DiffEverything roadmap
+- text and code diff
+- binary and hex diff
+- image pixel diff
+- folder comparison

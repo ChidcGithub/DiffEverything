@@ -1,0 +1,12 @@
+{
+  "CFBundleName": "DemoApp",
+  "CFBundleVersion": "1.0",
+  "Monitored": [
+    "alpha",
+    "beta"
+  ],
+  "Settings": {
+    "AutoSave": true,
+    "Theme": "light"
+  }
+}

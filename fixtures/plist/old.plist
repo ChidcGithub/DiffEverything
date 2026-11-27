@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>DemoApp</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>Monitored</key>
+	<array>
+		<string>alpha</string>
+		<string>beta</string>
+	</array>
+	<key>Settings</key>
+	<dict>
+		<key>AutoSave</key>
+		<true/>
+		<key>Theme</key>
+		<string>light</string>
+	</dict>
+</dict>
+</plist>

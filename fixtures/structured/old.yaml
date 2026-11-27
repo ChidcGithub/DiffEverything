@@ -1,0 +1,9 @@
+name: DiffEverything
+version: 0.1.0
+features:
+  - text
+  - binary
+  - image
+settings:
+  theme: light
+  max_file_mb: 64

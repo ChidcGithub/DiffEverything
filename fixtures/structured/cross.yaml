@@ -1,0 +1,7 @@
+name: DiffEverything
+features:
+  - text
+  - image
+settings:
+  theme: dark
+  max_file_mb: 128

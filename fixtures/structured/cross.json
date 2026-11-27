@@ -1,0 +1,8 @@
+{
+  "name": "DiffEverything",
+  "features": ["text", "image"],
+  "settings": {
+    "theme": "light",
+    "max_file_mb": 128
+  }
+}

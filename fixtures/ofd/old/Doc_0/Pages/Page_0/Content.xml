@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Content>
+    <ofd:TextObject ID="1" Boundary="10 10 400 50">
+      <ofd:TextCode X="10" Y="10">OFD project status</ofd:TextCode>
+      <ofd:TextCode X="10" Y="30">Status: draft</ofd:TextCode>
+      <ofd:TextCode X="10" Y="50">Owner: Alice</ofd:TextCode>
+    </ofd:TextObject>
+  </ofd:Content>
+</ofd:Page>

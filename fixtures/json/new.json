@@ -1,0 +1,9 @@
+{
+  "name": "DiffEverything",
+  "version": "0.2.0",
+  "features": ["text", "binary", "image", "json", "zip"],
+  "settings": {
+    "theme": "dark",
+    "max_file_mb": 128
+  }
+}

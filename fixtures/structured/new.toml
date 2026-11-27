@@ -1,0 +1,9 @@
+name = "DiffEverything"
+version = "0.2.0"
+
+[features]
+items = ["text", "binary", "image", "toml", "csv"]
+
+[settings]
+theme = "dark"
+max_file_mb = 128

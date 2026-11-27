@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ofd:OFD xmlns:ofd="http://www.ofdspec.org/2016" Version="1.0">
+  <ofd:DocBody>
+    <ofd:DocInfo>
+      <ofd:DocID>new</ofd:DocID>
+      <ofd:Title>DiffEverything OFD demo</ofd:Title>
+    </ofd:DocInfo>
+    <ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot>
+  </ofd:DocBody>
+</ofd:OFD>

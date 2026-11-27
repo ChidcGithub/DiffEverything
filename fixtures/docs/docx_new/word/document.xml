@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>DiffEverything project plan</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Status: released</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Owner: Bob</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Milestone: CLI only</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Next: strict tests</w:t></w:r></w:p>
+  </w:body>
+</w:document>

@@ -1,0 +1,7 @@
+DiffEverything roadmap
+- text and code diff (line context)
+- binary and hex diff
+- image pixel diff
+- folder comparison
+- JSON semantic diff
+- ZIP archive diff

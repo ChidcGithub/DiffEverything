@@ -1,0 +1,44 @@
+openapi: 3.0.0
+info:
+  title: Pet API
+  version: 1.1.0
+paths:
+  /pets:
+    get:
+      parameters:
+        - name: limit
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: ok
+  /health:
+    get:
+      responses:
+        '200':
+          description: ok
+  /owners:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: created
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [id, name, kind]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
