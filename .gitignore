@@ -11,3 +11,4 @@ __pycache__/
 /smoke-test-release.log
 /testdata-fetch.log
 /fixtures/binary/change.patch
+/scripts
