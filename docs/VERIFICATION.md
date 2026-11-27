@@ -10,7 +10,7 @@
 
 On 2026-11-27, the `1.0.3 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 340 debug tests, 340 release tests, the optimized `dist` build and 189 smoke tests. It adds `--support` format/capability discovery, removes the feature list from `--version`, keeps the >99% average byte-ratio `COMPLETELY DIFFERENT` rule, consolidates diff-core integration tests into one link target, and adds the fast release profile. Packed-application detection was corrected to use PE/ELF section names and APK shell-library entries rather than raw signature strings, eliminating false positives from the tool's own string table.
 
-Final release artifact: `target/dist/diff-everything.exe`, 55,601,664 bytes (53.03 MiB), SHA-256 `CF952A41C98944EC12B72214E4D27D2E2B5763AFAFEB6EE12CA1E49BA12F36BB`. The binary was built from code commit `a607f8c8521f` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
+Final release artifact: `target/dist/diff-everything.exe`, 55,600,128 bytes (53.03 MiB), SHA-256 `6CD198D1E65ECBBC09D0EEF2A31F3521DA5A5258D202F4B2CA8CFBAFE044FFB9`. The binary was built from code commit `afbba00969a8` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
 
 Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md`.
 
