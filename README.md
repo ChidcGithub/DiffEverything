@@ -237,4 +237,4 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 
 ## License
 
-MIT. Reference projects were used to study algorithms and design; GPL/LGPL code from diffoscope, diff-pdf, Graphtage and others was not copied.
+MIT. See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the project license and third-party notices. Reference projects were used to study algorithms and design; GPL/LGPL code from diffoscope, diff-pdf, Graphtage and others was not copied.

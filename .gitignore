@@ -2,6 +2,8 @@
 **/*.rs.bk
 *.pdb
 .DS_Store
+__pycache__/
+*.pyc
 /references
 /testdata/external
 /testdata/tools
