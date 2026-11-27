@@ -1504,7 +1504,7 @@ fn version_reports_codename_and_build_info() {
     assert_eq!(long.status.code(), Some(0), "{}", stderr(&long));
     let text = stdout(&long);
     for field in [
-        "1.0.2 (Toyger)",
+        "1.0.2.1 (Toyger)",
         "Commit:",
         "Build:",
         "Rust:",
@@ -1517,7 +1517,7 @@ fn version_reports_codename_and_build_info() {
 
     let short = run_str(&["-V"]);
     assert_eq!(short.status.code(), Some(0), "{}", stderr(&short));
-    assert_eq!(stdout(&short).trim(), "diff-everything 1.0.2 (Toyger)");
+    assert_eq!(stdout(&short).trim(), "diff-everything 1.0.2.1 (Toyger)");
 }
 
 #[test]
@@ -1732,44 +1732,14 @@ fn packed_executables_require_legal_confirmation() {
 }
 
 #[test]
-fn completely_different_is_reported_above_90_percent() {
+fn completely_different_is_reported_above_99_percent() {
     let dir = tempfile::tempdir().unwrap();
     let left = dir.path().join("left.txt");
     let right = dir.path().join("right.txt");
     let near = dir.path().join("near.txt");
-    std::fs::write(
-        &left,
-        (0..100)
-            .map(|index| format!("old line {index}\n"))
-            .collect::<String>(),
-    )
-    .unwrap();
-    std::fs::write(
-        &right,
-        (0..100)
-            .map(|index| {
-                if index < 95 {
-                    format!("new line {index}\n")
-                } else {
-                    format!("old line {index}\n")
-                }
-            })
-            .collect::<String>(),
-    )
-    .unwrap();
-    std::fs::write(
-        &near,
-        (0..100)
-            .map(|index| {
-                if index < 5 {
-                    format!("new line {index}\n")
-                } else {
-                    format!("old line {index}\n")
-                }
-            })
-            .collect::<String>(),
-    )
-    .unwrap();
+    std::fs::write(&left, format!("{}\n", "a".repeat(1000))).unwrap();
+    std::fs::write(&right, format!("{}\n", "b".repeat(1000))).unwrap();
+    std::fs::write(&near, format!("{}{}\n", "a".repeat(950), "b".repeat(50))).unwrap();
 
     let output = run_str(&[
         left.to_str().unwrap(),

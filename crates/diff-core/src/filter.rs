@@ -518,6 +518,7 @@ mod tests {
                 encoding_right: "utf-8".into(),
                 left_lines: 2,
                 right_lines: 2,
+                byte_difference_ratio: 0.0,
                 added_lines: 2,
                 removed_lines: 2,
                 hunks: vec![TextHunk {
@@ -568,6 +569,7 @@ mod tests {
                 encoding_right: "utf-8".into(),
                 left_lines: 2,
                 right_lines: 2,
+                byte_difference_ratio: 0.0,
                 added_lines: 2,
                 removed_lines: 2,
                 hunks: vec![TextHunk {

@@ -3086,13 +3086,23 @@ fn fraction(changed: u64, total: u64) -> f64 {
     }
 }
 
+fn average_changed_ratio(changed: u64, left_total: u64, right_total: u64) -> f64 {
+    if left_total == 0 && right_total == 0 {
+        return 0.0;
+    }
+    if left_total == 0 || right_total == 0 {
+        return 1.0;
+    }
+    let changed = changed as f64;
+    ((changed / left_total as f64 + changed / right_total as f64) / 2.0).clamp(0.0, 1.0)
+}
+
 fn body_difference_ratio(body: &DiffBody) -> f64 {
     match body {
-        DiffBody::Text(diff) => fraction(
-            diff.added_lines.max(diff.removed_lines) as u64,
-            diff.left_lines.max(diff.right_lines) as u64,
-        ),
-        DiffBody::Binary(diff) => fraction(diff.differing_bytes, diff.left_len.max(diff.right_len)),
+        DiffBody::Text(diff) => diff.byte_difference_ratio.clamp(0.0, 1.0),
+        DiffBody::Binary(diff) => {
+            average_changed_ratio(diff.differing_bytes, diff.left_len, diff.right_len)
+        }
         DiffBody::Image(diff) => diff.diff_ratio.clamp(0.0, 1.0),
         DiffBody::Table(diff) => fraction(
             diff.rows.len() as u64,
@@ -3132,6 +3142,9 @@ fn body_difference_ratio(body: &DiffBody) -> f64 {
 }
 
 fn is_completely_different(root: &DiffNode) -> bool {
+    if root.status == DiffStatus::Equal {
+        return false;
+    }
     let ratio = match &root.body {
         DiffBody::Directory(diff) => {
             let changed = diff

@@ -1,6 +1,6 @@
 # DiffEverything
 
-**Current release: 1.0.2 (Toyger)**
+**Current release: 1.0.2.1 (Toyger)**
 
 A Rust CLI that compares heterogeneous files by normalizing them into one diff tree. It does not replace `diff`; it adds format-aware comparison and multiple report formats.
 
@@ -32,7 +32,7 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 | Notebooks | `.ipynb` | Cell-level diff, global cell-id alignment, output/execution-count changes, three-way cell merge |
 | Merge | Text / notebooks / directories | Three-way merge; clean or conflict exit codes; directory output to a new directory |
 | Reports | — | ANSI, interactive TUI, JSON, Markdown, self-contained HTML, unified diff |
-| Workflow | — | Exit codes, `--name-only`, `--quiet`, `--summary-only`, streaming fallback for large files, directory sync, session save/load, external comparator delegation, parallel directory/archive comparison (`--jobs`), terminal progress, packed-application legal prompt, completely-different (>90%) verdict, optional Kaspersky security scan |
+| Workflow | — | Exit codes, `--name-only`, `--quiet`, `--summary-only`, streaming fallback for large files, directory sync, session save/load, external comparator delegation, parallel directory/archive comparison (`--jobs`), terminal progress, packed-application legal prompt, completely-different (>99%) verdict, optional Kaspersky security scan |
 | Linked input | HTTP(S) files, Git repository URLs | Download with embedded aria2 (100 MiB confirmation guard, `-y`), compare locally; `--git-history` compares refs, HEAD and commit metadata (up to 2,000 commits); Kaspersky scan runs by default for linked inputs |
 | Remote input | WebDAV / HTTP(S) / SFTP / SMB | Download files or recursive directories, then compare locally; URL credentials or `--remote-user` / `--remote-password` |
 
@@ -181,13 +181,13 @@ Common examples:
 `--version` prints the codename plus build metadata; `-V` prints only the first line:
 
 ```text
-diff-everything 1.0.2 (Toyger)
+diff-everything 1.0.2.1 (Toyger)
 Commit:     <git-commit>
 Build:      release / <target-triple>
 Rust:       <rustc-version>
 License:    MIT
 Repository: https://github.com/ChidcGithub/DiffEverything
-Features:   linked files, Git history, aria2, Kaspersky, packed-app detection, >90% verdict, rich terminal UI
+Features:   linked files, Git history, aria2, Kaspersky, packed-app detection, >99% verdict, rich terminal UI
 ```
 
 ## CLI Options
@@ -295,7 +295,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 336 Rust tests (unit + integration + CLI)
+# 337 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -316,7 +316,7 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 - Example terminal layout (colors omitted):
 
 ```text
-DiffEverything 1.0.2 (Toyger)
+DiffEverything 1.0.2.1 (Toyger)
 ========================================================================
 left     fixtures\text\old.txt  [text | 105 B]
 right    fixtures\text\new.txt  [text | 160 B]
@@ -332,7 +332,7 @@ elapsed  7 ms
 ```
 
 - Packed/protected executables and APKs are detected before comparison (UPX, ASPack, Themida, VMProtect, Enigma, MPRESS, PECompact, NSPack, Armadillo, Obsidium, PELock, tElock, MoleBox, BoxedApp, 360 Jiagu, Tencent Legu, Bangcle, Alibaba, Baidu, Naqu and NetEase shells). The CLI lists the detected packer and warns that analyzing or unpacking it may violate its license or applicable law, then asks whether to continue. `-y` accepts; non-interactive runs without `-y` stop with exit code `2`.
-- When more than 90% of a single file or top-level container changed, the report adds a `COMPLETELY DIFFERENT` verdict. The ratio uses changed lines, bytes, pixels, table rows, workbook cells, audio waveform windows or container entries depending on the format; JSON exposes it as `completely_different`.
+- When more than 99% of a single file or top-level container changed, the report adds a `COMPLETELY DIFFERENT` verdict. Text and binary files use `(changed bytes / left bytes + changed bytes / right bytes) / 2`; images, tables, workbooks, notebooks, audio and containers use semantic ratios (pixels, rows, cells, windows or entries). JSON exposes it as `completely_different`.
 - `--security-scan` uses only Kaspersky's local `avp.com` interface. Common installation paths are auto-detected; `--kaspersky <FILE>` overrides detection. Scans use `/i0` (report only), so files are never disinfected or deleted. Detected threats abort with exit code `2`; a missing Kaspersky installation or stopped service produces a warning and the diff continues. `--scan-timeout` bounds each scan.
 - Linked inputs (HTTP(S) files and Git repository URLs) are scanned automatically with the same local Kaspersky interface. `--no-security-scan` disables this default; `--security-scan` still enables it manually for any comparison.
 

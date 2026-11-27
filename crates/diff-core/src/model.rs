@@ -2,8 +2,10 @@ use serde::Serialize;
 use std::path::Path;
 
 pub const TOOL_NAME: &str = "DiffEverything";
-pub const TOOL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (Toyger)");
-pub const COMPLETELY_DIFFERENT_THRESHOLD: f64 = 0.90;
+// Cargo requires three-component semver, so the hotfix revision is displayed
+// as an additional component while package metadata remains 1.0.2.
+pub const TOOL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), ".1 (Toyger)");
+pub const COMPLETELY_DIFFERENT_THRESHOLD: f64 = 0.99;
 
 /// Broad category of an input artifact. Handlers are selected from this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -401,6 +403,9 @@ pub struct TextDiff {
     pub left_lines: usize,
     #[serde(default)]
     pub right_lines: usize,
+    /// Average fraction of raw bytes changed on each side.
+    #[serde(default)]
+    pub byte_difference_ratio: f64,
     pub added_lines: usize,
     pub removed_lines: usize,
     pub hunks: Vec<TextHunk>,

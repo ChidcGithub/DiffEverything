@@ -3,6 +3,27 @@ use similar::{ChangeTag, TextDiff as SimilarDiff};
 
 /// Compare two decoded strings line-by-line, keeping a few lines of context
 /// around every changed region.
+fn byte_difference_ratio(left: &str, right: &str) -> f64 {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let left_len = left.len() as f64;
+    let right_len = right.len() as f64;
+    if left.is_empty() && right.is_empty() {
+        return 0.0;
+    }
+    if left.is_empty() || right.is_empty() {
+        return 1.0;
+    }
+    let common = left.len().min(right.len());
+    let mut changed = left.len().abs_diff(right.len()) as f64;
+    for index in 0..common {
+        if left[index] != right[index] {
+            changed += 1.0;
+        }
+    }
+    ((changed / left_len + changed / right_len) / 2.0).clamp(0.0, 1.0)
+}
+
 pub fn compare_text(left: &str, right: &str, context: usize, max_hunks: usize) -> TextDiff {
     compare_text_impl(left, right, left, right, context, max_hunks)
 }
@@ -179,6 +200,7 @@ fn compare_text_impl(
         encoding_right: String::new(),
         left_lines: original_left_lines.len(),
         right_lines: original_right_lines.len(),
+        byte_difference_ratio: byte_difference_ratio(original_left, original_right),
         added_lines,
         removed_lines,
         hunks,
@@ -415,5 +437,13 @@ mod tests {
         let decoded = decode_text(&bytes);
         assert_eq!(decoded.text, "hello");
         assert_eq!(decoded.encoding, "UTF-16LE");
+    }
+
+    #[test]
+    fn byte_difference_ratio_averages_both_sides() {
+        assert!((byte_difference_ratio("abcd", "ab") - 0.75).abs() < 0.001);
+        assert!((byte_difference_ratio("same", "same") - 0.0).abs() < 0.001);
+        assert!((byte_difference_ratio("", "x") - 1.0).abs() < 0.001);
+        assert!((byte_difference_ratio("", "") - 0.0).abs() < 0.001);
     }
 }

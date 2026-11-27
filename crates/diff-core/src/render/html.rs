@@ -117,7 +117,7 @@ footer { margin-top: 34px; color: var(--muted); font-size: 12px; }
     if report.completely_different {
         let _ = writeln!(
             out,
-            r#"<div class="verdict">COMPLETELY DIFFERENT (&gt;90% changed)</div>"#
+            r#"<div class="verdict">COMPLETELY DIFFERENT (&gt;99% changed)</div>"#
         );
     }
 

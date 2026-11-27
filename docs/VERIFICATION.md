@@ -32,7 +32,7 @@ Final release artifact: `target/release/diff-everything.exe`, 50,950,656 bytes (
 
 ## Extended Format Verification
 
-On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 336 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
+On 2026-11-27, `cargo test --workspace` and `cargo test --workspace --release` each passed 337 tests; `cargo clippy --workspace --all-targets -- -D warnings` passed; the smoke suite passed 189 cases. The 21 format integration tests cover SquashFS, Snap, AppImage, Flatpak, ext4, DMG, MSIX, AAB, Parquet, Avro, ORC, CBOR, MessagePack, Protobuf, ODT, ODP, EPUB, RTF, EML, video, and audio waveform comparison; an additional CLI table test runs every new format through the binary. Each format test also verifies that `--detail full` exposes more detail than `concise`. Parallel and sequential directory/archive reports are compared for equality, forced progress is verified on stderr, and Kaspersky integration is covered by report-parser tests, a mock `avp.com` scan, and a real EICAR detection run (threat exit code 2).
 
 ## Linked Input Verification
 
@@ -57,7 +57,8 @@ Manual release verification on Windows also downloaded two HTTP files with the e
 - `no_file_size_limit_disables_detailed_diff_limit` verifies the streaming fallback at `--max-file-bytes 1`, the full text diff with `--no-file-size-limit`, and the exit-2 conflict when both options are supplied.
 - `entry_limits_can_be_removed_for_directories_and_archives` verifies `--max-entries 1` truncation for both directories and ZIP archives, full traversal with `--no-entry-limit`, the global `--no-limits` path, and its conflict with an individual limit flag.
 - `detects_upx_signature` and `detects_apk_packer_library` cover executable signature and APK shell-library detection; `packed_executables_require_legal_confirmation` verifies the non-interactive exit-2 block and `-y` override.
-- `completely_different_is_reported_above_90_percent` verifies the >90% JSON flag and ANSI verdict, and that a 5% change remains a normal diff.
+- `completely_different_is_reported_above_99_percent` verifies the >99% JSON flag and ANSI verdict, and that a 5% change remains a normal diff.
+- `byte_difference_ratio_averages_both_sides` verifies the text/binary formula `(changed/left + changed/right)/2`, including unequal lengths and empty inputs.
 - `extracts_the_embedded_aria2_binary` verifies that the zstd-compressed Windows asset decompresses to the expected 5,649,408-byte executable.
 - Parallel/sequential directory and archive reports remain byte-identical after sharing `Arc<GlobSet>`, linear key merging, and removing the per-entry result-key clone.
 
@@ -67,19 +68,19 @@ Manual release verification on Windows also downloaded two HTTP files with the e
 cargo test --workspace
 11 CLI binary unit tests
 73 CLI tests
-146 diff-core unit tests
+147 diff-core unit tests
 7 engine integration tests
 21 extended format integration tests
 58 format integration tests
 15 robustness tests
 3 folder merge integration tests
 2 folder patch integration tests
-= 336 tests, all passing
+= 337 tests, all passing
 ```
 
 ```text
 cargo test --workspace --release
-(336 tests, all passing)
+(337 tests, all passing)
 ```
 
 ```text

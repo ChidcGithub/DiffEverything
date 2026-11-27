@@ -30,7 +30,7 @@ const HELP_STYLES: Styles = Styles::styled()
 
 const LONG_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    " (Toyger)\n",
+    ".1 (Toyger)\n",
     "Commit:     ",
     env!("BUILD_COMMIT"),
     "\n",

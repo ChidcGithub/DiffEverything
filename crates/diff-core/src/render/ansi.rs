@@ -113,7 +113,7 @@ fn render_plain_header(report: &DiffReport, options: &RenderOptions, out: &mut S
             out,
             "verdict: {}",
             paint(
-                "COMPLETELY DIFFERENT (>90% changed)",
+                "COMPLETELY DIFFERENT (>99% changed)",
                 BOLD_RED,
                 options.color
             )
@@ -159,7 +159,7 @@ fn render_rich_header(report: &DiffReport, options: &RenderOptions, out: &mut St
             "{} {}",
             field_label("verdict", options),
             paint(
-                "COMPLETELY DIFFERENT (>90% changed)",
+                "COMPLETELY DIFFERENT (>99% changed)",
                 BOLD_RED,
                 options.color
             )

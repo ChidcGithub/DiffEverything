@@ -225,14 +225,15 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 
 ## Completely Different Verdict
 
-- `DiffReport.completely_different` is true when more than 90% of the compared content changed (`COMPLETELY_DIFFERENT_THRESHOLD = 0.90`).
-- The ratio is format-aware: text changed lines / max line count, binary differing bytes / max byte length, image pixel ratio, table changed rows / max rows, workbook changed cells / max cells, notebook changed cells / max cells, audio changed waveform windows / total windows, and directory/archive changed entries / total entries.
+- `DiffReport.completely_different` is true when more than 99% of the compared content changed (`COMPLETELY_DIFFERENT_THRESHOLD = 0.99`).
+- Text and binary leaves use `(changed_bytes / left_bytes + changed_bytes / right_bytes) / 2`, where `changed_bytes` counts unequal positions plus the length difference; zero-length sides are handled explicitly.
+- Images, tables, workbooks, notebooks, audio and directories/archives use semantic ratios: pixel ratio, changed rows / max rows, changed cells / max cells, changed waveform windows / total windows, and changed entries / total entries.
 - Top-level containers use their entry ratio rather than the maximum child ratio, so one heavily changed file in a large directory does not mislabel the whole comparison.
 - ANSI, Markdown, HTML and JSON expose the verdict; the normal `DIFFERENT` status and exit code are unchanged.
 
 ## Version and Build Metadata
 
-- The package version is `1.0.2`; the release codename is `Toyger`.
+- The Cargo package metadata is `1.0.2` (Cargo requires three-component semver); the displayed hotfix version is `1.0.2.1`, codename `Toyger`.
 - `diff-cli/build.rs` captures the git commit, Cargo target/profile and `rustc --version` at compile time. Missing git data falls back to `unknown`.
 - `-V` / `version` exposes the short semantic version; `--version` / `long_version` appends commit, build profile/target, rustc, license, repository and feature metadata. Build metadata is display-only and does not affect diff behavior.
 
