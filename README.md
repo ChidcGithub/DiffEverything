@@ -11,13 +11,17 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 | Text / code | Any text, UTF-8 / UTF-16 / GBK, `.reg` exports | Line diff, context, word-level highlights, ignore whitespace / case |
 | Syntax-aware | Rust, Python, JS/JSX, TS/TSX, C, C++, Go, Java, Bash, Ruby, C#, Swift, Lua | tree-sitter token diff, full syntax-tree diff (`--mode tree`), bounded syntax-event graph diff (`--mode graph`, including non-local moves), comment ignoring |
 | Structured data | JSON / JSON5 / YAML / TOML / INI / XML / HTML / Plist (XML + binary) / Pickle / Gettext (.mo) / OpenAPI | Semantic tree diff with path-level added / removed / changed, array similarity alignment, OpenAPI breaking-change markers |
+| Serialized data | Parquet / Avro / ORC / CBOR / MessagePack / Protobuf | Parquet/Avro/ORC schema and row values; CBOR/MessagePack values; generic Protobuf wire fields; `--detail concise` caps changes, `full` shows every change |
 | Databases | SQLite 3 `.db` / `.sqlite` | Semantic diff of tables, columns, rows, indexes and triggers; equal databases with different page sizes or layouts compare equal |
 | Cross-format | JSON ↔ YAML ↔ TOML ↔ INI ↔ XML ↔ HTML ↔ Plist ↔ Pickle | Parse both sides into a common tree, e.g. `YAML+JSON`, `PLIST+JSON`, `PICKLE+JSON` |
 | Tables | CSV / TSV | Header, row and cell diff; align rows with `--key` |
 | Spreadsheets | XLSX / XLS / ODS | Worksheet and cell diff (calamine) |
 | Documents | PDF / OFD / DOCX / PPTX | PDF text layer, page count, page-level text blocks and rendered visual diff (HTML/PNG/PDF reports); OFD page text; DOCX body/headers/footers; PPTX slides/notes |
+| Open documents / mail | ODT / ODP / EPUB / RTF / EML | ODT/ODP text and metadata plus embedded entry hashes; EPUB metadata, spine and chapter text; RTF paragraphs and control words; EML headers, text/HTML bodies, attachments and hashes |
 | Images / OCR | PNG / JPEG / GIF / WebP / BMP / TIFF / ICO / CUR | Pixel difference ratio, YIQ perceptual tolerance (`--image-threshold`), max channel delta, bounding box, changed regions, heatmap, side-by-side image, Tesseract OCR, scanned-PDF OCR |
-| Audio | MP3 / FLAC / OGG / M4A / WAV / AAC / OPUS / WMA | Duration, bitrate, sample rate, channels and tag metadata (lofty) |
+| Audio | MP3 / FLAC / OGG / M4A / WAV / AAC / OPUS / WMA | Duration, bitrate, sample rate, channels and tag metadata (lofty); RMS waveform windows in full mode, capped in concise mode |
+| Video / waveform | MP4 / M4V / MKV / WebM / MOV / AVI / WMV / FLV | Container tracks, codecs, dimensions, frame counts, packet counts/bytes and per-track packet hashes; audio-track RMS waveform; full mode shows more track/packet and waveform detail |
+| Disk images / packages | SquashFS / Snap / AppImage / Flatpak / DMG / MSIX / AAB / ext4 | SquashFS/Snap/AppImage entry trees, modes and contents; ext4 inodes, modes, owners, xattrs and file data; DMG UDIF/block-map metadata; MSIX manifest/block map; AAB protobuf bundle/manifests; Flatpak ref/commit metadata and payload hash |
 | Binary / patches | Any binary / directory | Hex line diff, exact differing byte count, first difference offset, single-file bsdiff, directory ZIP patch, pure-Rust HDIFF13 encode/apply (none/zstd/zlib/bzip2/lzma2), pure-Rust HDIFF19 directory patch encode/apply (fadler64 checksums, same-file dedup, optional compression, hpatchz-compatible) |
 | Android | `.apk`, binary `AndroidManifest.xml` | Recursive ZIP plus binary XML string-pool/chunk parsing; semantic element/namespace/attribute/typed-value diff; `--detail full -y` decompiles shared `classes.dex` classes to Java, summarizes large one-sided class sets by descriptor, and disassembles embedded `.so` files; damaged manifests fall back to binary |
 | Executables | ELF / PE / Mach-O / COFF | Architecture, entry point, section digest, file offset, symbols, imports; fat Mach-O slices; damaged files fall back to binary; `--detail full` adds normalized disassembly for ELF/PE/Mach-O and `.so` (y/n prompt, `-y` accepts) |
@@ -104,6 +108,35 @@ Common examples:
 .\target\release\diff-everything.exe old.bin new.bin --patch-output change.patch
 .\target\release\diff-everything.exe old-folder new-folder --patch-output folder.patch
 .\target\release\diff-everything.exe old-folder --apply-patch folder.patch --merge-output patched-folder
+
+# Serialized data
+.\target\release\diff-everything.exe old.parquet new.parquet --detail full
+.\target\release\diff-everything.exe old.avro new.avro
+.\target\release\diff-everything.exe old.orc new.orc
+.\target\release\diff-everything.exe old.cbor new.cbor
+.\target\release\diff-everything.exe old.msgpack new.msgpack
+.\target\release\diff-everything.exe old.pb new.pb
+
+# Open documents and mail
+.\target\release\diff-everything.exe old.odt new.odt
+.\target\release\diff-everything.exe old.odp new.odp
+.\target\release\diff-everything.exe old.epub new.epub
+.\target\release\diff-everything.exe old.rtf new.rtf
+.\target\release\diff-everything.exe old.eml new.eml
+
+# Disk images and packages
+.\target\release\diff-everything.exe old.squashfs new.squashfs
+.\target\release\diff-everything.exe old.snap new.snap
+.\target\release\diff-everything.exe old.appimage new.appimage
+.\target\release\diff-everything.exe old.flatpak new.flatpak
+.\target\release\diff-everything.exe old.dmg new.dmg
+.\target\release\diff-everything.exe old.msix new.msix
+.\target\release\diff-everything.exe old.aab new.aab
+.\target\release\diff-everything.exe old.ext4 new.ext4
+
+# Video and audio waveform
+.\target\release\diff-everything.exe old.mp4 new.mp4 --detail full
+.\target\release\diff-everything.exe old.wav new.wav --detail full
 
 # Remote input
 .\target\release\diff-everything.exe webdav://user:pass@host/old.txt https://host/new.txt
@@ -200,7 +233,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 280 Rust tests (unit + integration + CLI)
+# 310 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint

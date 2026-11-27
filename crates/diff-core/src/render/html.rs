@@ -579,6 +579,38 @@ fn render_body(node: &DiffNode, out: &mut String) {
                 out.push_str("<dt>Content</dt><dd>audio data differs</dd>\n");
             }
             out.push_str("</dl>\n");
+            if let Some(waveform) = &diff.waveform {
+                let _ = writeln!(
+                    out,
+                    "<p class=\"meta\">Waveform {} Hz, {} ch, {} ms windows, max delta {:.4}, {} changed{}</p>",
+                    waveform.sample_rate,
+                    waveform.channels,
+                    waveform.window_ms,
+                    waveform.max_delta,
+                    waveform.changed_windows,
+                    if waveform.truncated {
+                        " (truncated)"
+                    } else {
+                        ""
+                    }
+                );
+                if !waveform.left.is_empty() {
+                    out.push_str("<ul class=\"changes\">\n");
+                    for (index, (left, right)) in waveform
+                        .left
+                        .iter()
+                        .zip(&waveform.right)
+                        .take(16)
+                        .enumerate()
+                    {
+                        let _ = writeln!(
+                            out,
+                            "<li class=\"mod\">window {index}: {left:.4} &#8594; {right:.4}</li>"
+                        );
+                    }
+                    out.push_str("</ul>\n");
+                }
+            }
             if !diff.tags.is_empty() {
                 out.push_str("<ul class=\"changes\">\n");
                 for tag in &diff.tags {

@@ -403,6 +403,35 @@ fn render_node(node: &DiffNode, level: usize, out: &mut String) {
             if diff.content_differs {
                 let _ = writeln!(out, "- Audio content differs");
             }
+            if let Some(waveform) = &diff.waveform {
+                let _ = writeln!(
+                    out,
+                    "- Waveform: {} Hz, {} ch, {} ms windows, max delta {:.4}, {} changed{}",
+                    waveform.sample_rate,
+                    waveform.channels,
+                    waveform.window_ms,
+                    waveform.max_delta,
+                    waveform.changed_windows,
+                    if waveform.truncated {
+                        " (truncated)"
+                    } else {
+                        ""
+                    }
+                );
+                if !waveform.left.is_empty() {
+                    let _ = writeln!(out, "\n| Window | Left RMS | Right RMS |");
+                    let _ = writeln!(out, "|---:|---:|---:|");
+                    for (index, (left, right)) in waveform
+                        .left
+                        .iter()
+                        .zip(&waveform.right)
+                        .take(16)
+                        .enumerate()
+                    {
+                        let _ = writeln!(out, "| {index} | {left:.4} | {right:.4} |");
+                    }
+                }
+            }
             for tag in &diff.tags {
                 let _ = writeln!(
                     out,

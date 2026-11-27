@@ -132,6 +132,30 @@ pub fn detect_bytes(name: &str, bytes: &[u8]) -> FileKind {
     if is_zip(bytes) {
         return FileKind::Zip;
     }
+    if bytes.starts_with(b"PAR1") {
+        return FileKind::Parquet;
+    }
+    if bytes.starts_with(b"Obj\x01") {
+        return FileKind::Avro;
+    }
+    if bytes.starts_with(b"ORC") {
+        return FileKind::Orc;
+    }
+    if bytes.starts_with(b"hsqs") || bytes.starts_with(b"sqsh") {
+        return FileKind::Squashfs;
+    }
+    if bytes.starts_with(b"{\\rtf") {
+        return FileKind::Rtf;
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        return FileKind::Video;
+    }
+    if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return FileKind::Video;
+    }
+    if bytes.len() >= 1082 && bytes[1080..1082] == [0x53, 0xEF] {
+        return FileKind::Ext4;
+    }
     if bytes.starts_with(&[0x1F, 0x8B]) {
         return FileKind::Gzip;
     }
@@ -194,6 +218,17 @@ fn is_container_extension(kind: FileKind) -> bool {
             | FileKind::Xlsx
             | FileKind::Pptx
             | FileKind::Office
+            | FileKind::Squashfs
+            | FileKind::Snap
+            | FileKind::AppImage
+            | FileKind::Flatpak
+            | FileKind::Dmg
+            | FileKind::Msix
+            | FileKind::Aab
+            | FileKind::Ext4
+            | FileKind::Odt
+            | FileKind::Odp
+            | FileKind::Epub
             | FileKind::Gzip
             | FileKind::Zstd
             | FileKind::Bzip2
@@ -246,11 +281,31 @@ fn kind_from_name(name: &str) -> Option<FileKind> {
         "pdf" => FileKind::Pdf,
         "ofd" => FileKind::Ofd,
         "docx" => FileKind::Docx,
-        "doc" | "rtf" => FileKind::Office,
+        "doc" => FileKind::Office,
         "xlsx" | "xlsm" | "xls" | "ods" => FileKind::Xlsx,
         "pptx" => FileKind::Pptx,
-        "ppt" | "odp" => FileKind::Office,
-        "zip" | "jar" | "apk" | "whl" | "epub" => FileKind::Zip,
+        "ppt" => FileKind::Office,
+        "odt" => FileKind::Odt,
+        "odp" => FileKind::Odp,
+        "epub" => FileKind::Epub,
+        "rtf" => FileKind::Rtf,
+        "eml" => FileKind::Eml,
+        "squashfs" | "sqfs" | "sfs" => FileKind::Squashfs,
+        "snap" => FileKind::Snap,
+        "appimage" => FileKind::AppImage,
+        "flatpak" | "flatpakref" | "flatpakrepo" => FileKind::Flatpak,
+        "dmg" => FileKind::Dmg,
+        "msix" | "appx" => FileKind::Msix,
+        "aab" => FileKind::Aab,
+        "ext4" => FileKind::Ext4,
+        "parquet" => FileKind::Parquet,
+        "avro" => FileKind::Avro,
+        "orc" => FileKind::Orc,
+        "cbor" => FileKind::Cbor,
+        "msgpack" | "mpack" => FileKind::MessagePack,
+        "pb" | "protobuf" | "pbf" => FileKind::Protobuf,
+        "mp4" | "m4v" | "mkv" | "webm" | "mov" | "avi" | "wmv" | "flv" => FileKind::Video,
+        "zip" | "jar" | "apk" | "whl" => FileKind::Zip,
         "7z" => FileKind::SevenZip,
         "tar" | "tgz" => FileKind::Tar,
         "deb" => FileKind::Deb,

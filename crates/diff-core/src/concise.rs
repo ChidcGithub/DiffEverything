@@ -42,6 +42,25 @@ fn apply_node(node: &mut DiffNode) {
             if diff.tags.len() > MAX_CHANGES {
                 diff.tags.truncate(MAX_CHANGES);
             }
+            if let Some(waveform) = &mut diff.waveform {
+                let windows = waveform.left.len().min(waveform.right.len());
+                let mut left = Vec::new();
+                let mut right = Vec::new();
+                for index in 0..windows {
+                    if (waveform.left[index] - waveform.right[index]).abs() > 0.01 {
+                        left.push(waveform.left[index]);
+                        right.push(waveform.right[index]);
+                        if left.len() >= MAX_CHANGES {
+                            break;
+                        }
+                    }
+                }
+                if left.len() < windows {
+                    waveform.truncated = true;
+                }
+                waveform.left = left;
+                waveform.right = right;
+            }
         }
         DiffBody::Binary(diff) => limit(&mut diff.rows, MAX_ROWS, &mut diff.truncated),
         DiffBody::Directory(diff) => concise_entries(

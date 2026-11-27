@@ -58,6 +58,26 @@ pub enum FileKind {
     Xlsx,
     Pptx,
     Office,
+    Squashfs,
+    Snap,
+    AppImage,
+    Flatpak,
+    Dmg,
+    Msix,
+    Aab,
+    Ext4,
+    Parquet,
+    Avro,
+    Orc,
+    Cbor,
+    MessagePack,
+    Protobuf,
+    Odt,
+    Odp,
+    Epub,
+    Rtf,
+    Eml,
+    Video,
     Unknown,
 }
 
@@ -112,6 +132,26 @@ impl FileKind {
             Self::Xlsx => "xlsx",
             Self::Pptx => "pptx",
             Self::Office => "office",
+            Self::Squashfs => "squashfs",
+            Self::Snap => "snap",
+            Self::AppImage => "appimage",
+            Self::Flatpak => "flatpak",
+            Self::Dmg => "dmg",
+            Self::Msix => "msix",
+            Self::Aab => "aab",
+            Self::Ext4 => "ext4",
+            Self::Parquet => "parquet",
+            Self::Avro => "avro",
+            Self::Orc => "orc",
+            Self::Cbor => "cbor",
+            Self::MessagePack => "messagepack",
+            Self::Protobuf => "protobuf",
+            Self::Odt => "odt",
+            Self::Odp => "odp",
+            Self::Epub => "epub",
+            Self::Rtf => "rtf",
+            Self::Eml => "eml",
+            Self::Video => "video",
             Self::Unknown => "unknown",
         }
     }
@@ -145,6 +185,14 @@ impl FileKind {
                 | Self::Pickle
                 | Self::Sqlite
                 | Self::Notebook
+                | Self::Parquet
+                | Self::Avro
+                | Self::Orc
+                | Self::Cbor
+                | Self::MessagePack
+                | Self::Protobuf
+                | Self::Rtf
+                | Self::Eml
         )
     }
 }
@@ -553,6 +601,20 @@ pub struct AudioDiff {
     pub right_channels: Option<u8>,
     pub tags: Vec<AudioTagChange>,
     pub content_differs: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waveform: Option<WaveformDiff>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WaveformDiff {
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub window_ms: u32,
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+    pub max_delta: f32,
+    pub changed_windows: usize,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

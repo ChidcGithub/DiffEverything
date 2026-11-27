@@ -1,0 +1,22 @@
+From: alice@example.com
+To: bob@example.com
+Subject: New subject
+Date: Fri, 27 Nov 2026 12:00:00 +0800
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============0912506251159783510=="
+
+--===============0912506251159783510==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Hello new body.
+
+--===============0912506251159783510==
+Content-Type: application/octet-stream
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="new.bin"
+MIME-Version: 1.0
+
+bmV3IGF0dGFjaG1lbnQ=
+
+--===============0912506251159783510==--

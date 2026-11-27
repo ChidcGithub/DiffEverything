@@ -509,6 +509,31 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
             if diff.content_differs {
                 let _ = writeln!(out, "{pad}  audio content differs");
             }
+            if let Some(waveform) = &diff.waveform {
+                let _ = writeln!(
+                    out,
+                    "{pad}  waveform: {} Hz, {} ch, {} ms windows, max delta {:.4}, {} changed{}",
+                    waveform.sample_rate,
+                    waveform.channels,
+                    waveform.window_ms,
+                    waveform.max_delta,
+                    waveform.changed_windows,
+                    if waveform.truncated {
+                        " (truncated)"
+                    } else {
+                        ""
+                    }
+                );
+                for (index, (left, right)) in waveform
+                    .left
+                    .iter()
+                    .zip(&waveform.right)
+                    .take(16)
+                    .enumerate()
+                {
+                    let _ = writeln!(out, "{pad}    window {index}: {left:.4} -> {right:.4}");
+                }
+            }
         }
         DiffBody::Binary(diff) => {
             let mut header = format!(

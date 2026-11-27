@@ -1307,6 +1307,143 @@ fn alternate_reports_are_well_formed() {
     assert!(text.contains("@@ -1,5 +1,7 @@"));
 }
 
+#[test]
+fn compares_extended_formats_from_cli() {
+    let cases = [
+        (
+            "fixtures/tabular/old.parquet",
+            "fixtures/tabular/new.parquet",
+            "PARQUET",
+        ),
+        (
+            "fixtures/tabular/old.avro",
+            "fixtures/tabular/new.avro",
+            "AVRO",
+        ),
+        (
+            "fixtures/tabular/old.orc",
+            "fixtures/tabular/new.orc",
+            "ORC",
+        ),
+        (
+            "fixtures/serialization/old.cbor",
+            "fixtures/serialization/new.cbor",
+            "CBOR",
+        ),
+        (
+            "fixtures/serialization/old.msgpack",
+            "fixtures/serialization/new.msgpack",
+            "MESSAGEPACK",
+        ),
+        (
+            "fixtures/serialization/old.pb",
+            "fixtures/serialization/new.pb",
+            "PROTOBUF",
+        ),
+        (
+            "fixtures/documents/old.odt",
+            "fixtures/documents/new.odt",
+            "ODT",
+        ),
+        (
+            "fixtures/documents/old.odp",
+            "fixtures/documents/new.odp",
+            "ODP",
+        ),
+        (
+            "fixtures/documents/old.epub",
+            "fixtures/documents/new.epub",
+            "EPUB",
+        ),
+        (
+            "fixtures/documents/old.rtf",
+            "fixtures/documents/new.rtf",
+            "RTF",
+        ),
+        (
+            "fixtures/documents/old.eml",
+            "fixtures/documents/new.eml",
+            "EML",
+        ),
+        (
+            "fixtures/packages/old.squashfs",
+            "fixtures/packages/new.squashfs",
+            "SQUASHFS",
+        ),
+        (
+            "fixtures/packages/old.snap",
+            "fixtures/packages/new.snap",
+            "SNAP",
+        ),
+        (
+            "fixtures/packages/old.appimage",
+            "fixtures/packages/new.appimage",
+            "APPIMAGE",
+        ),
+        (
+            "fixtures/packages/old.flatpak",
+            "fixtures/packages/new.flatpak",
+            "FLATPAK",
+        ),
+        (
+            "fixtures/packages/old.dmg",
+            "fixtures/packages/new.dmg",
+            "DMG",
+        ),
+        (
+            "fixtures/packages/old.msix",
+            "fixtures/packages/new.msix",
+            "MSIX",
+        ),
+        (
+            "fixtures/packages/old.aab",
+            "fixtures/packages/new.aab",
+            "AAB",
+        ),
+        (
+            "fixtures/packages/old.ext4",
+            "fixtures/packages/new.ext4",
+            "EXT4",
+        ),
+        ("fixtures/media/old.mp4", "fixtures/media/new.mp4", "VIDEO"),
+    ];
+    for (left, right, marker) in cases {
+        let left = workspace_path(left);
+        let right = workspace_path(right);
+        let output = run(&[
+            &left,
+            &right,
+            Path::new("--detail"),
+            Path::new("full"),
+            Path::new("--no-color"),
+        ]);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{marker}: {}",
+            stderr(&output)
+        );
+        let text = stdout(&output);
+        assert!(text.contains(marker), "{marker}: {text}");
+    }
+
+    let left = workspace_path("fixtures/media/old.wav");
+    let right = workspace_path("fixtures/media/new.wav");
+    let output = run(&[
+        &left,
+        &right,
+        Path::new("--detail"),
+        Path::new("full"),
+        Path::new("--no-color"),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("audio") && text.contains("waveform"),
+        "{text}"
+    );
+}
+
 fn workspace_path(relative: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop();

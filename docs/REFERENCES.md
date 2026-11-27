@@ -226,7 +226,7 @@ Registry export `.reg` files are compared as text; OCR is implemented for images
 
 ## Test Comparison
 
-- `cargo test --workspace`: 280 tests;
+- `cargo test --workspace`: 310 tests;
 - maintainer-local smoke-test suite: 189 end-to-end cases;
 - maintainer-local fixture download script: downloads real test files from W3C, Mozilla, python-docx, calamine, plotly, Kubernetes, w3schools, jsonplaceholder, picsum, GNU, Debian, Arch Linux, Fedora, CentOS and Open Diff;
 - `testdata/external/MANIFEST.csv`: URL, SHA-256, size.

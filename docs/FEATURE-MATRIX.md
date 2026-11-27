@@ -68,6 +68,21 @@ This document maps the core capabilities of 20 reference projects to DiffEveryth
 | csvdiff / daff | CSV primary-key alignment and cell diff | `diff/table.rs` | `compares_csv_cells`, `aligns_columns_by_name`, `compares_csv_with_key_column`, `compares_tsv_tables` | Done |
 | diffsitter | tree-sitter structural diff | `tree_diff.rs` | `builds_and_compares_trees` | Done |
 
+## Extended Format Coverage
+
+The following formats were added with semantic parsers and integration tests. Each test also checks that `--detail full` produces more detail than `concise`.
+
+| Area | Formats | Implementation | Verification |
+|---|---|---|---|
+| Filesystem images | SquashFS / Snap / AppImage | `diff/packages.rs` (`backhand`), SquashFS entry metadata/content, AppImage payload offset detection | `compares_squashfs_semantically_and_respects_detail`, `compares_snap_semantically_and_respects_detail`, `compares_appimage_semantically_and_respects_detail` |
+| Disk images | ext4 / DMG | `diff/packages.rs` (`ext4` crate, `udif`): inode/mode/owner/xattr/content; UDIF stats, partitions, block-map checksums | `compares_ext4_semantically_and_respects_detail`, `compares_dmg_semantically_and_respects_detail` |
+| Packages | Flatpak / MSIX / AAB | `diff/packages.rs`: Flatpak ref/commit/metadata strings; MSIX ZIP + AppxManifest XML + block map; AAB ZIP + protobuf bundle/manifests | `compares_flatpak_semantically_and_respects_detail`, `compares_msix_semantically_and_respects_detail`, `compares_aab_semantically_and_respects_detail` |
+| Columnar / serialized data | Parquet / Avro / ORC / CBOR / MessagePack / Protobuf | `diff/tabular.rs` (`parquet`, `apache-avro`, ORC footer/stripe parser), `diff/serialization.rs` (CBOR, MessagePack, generic protobuf wire decoder) | `compares_parquet_semantically_and_respects_detail`, `compares_avro_semantically_and_respects_detail`, `compares_orc_semantically_and_respects_detail`, `compares_cbor_semantically_and_respects_detail`, `compares_messagepack_semantically_and_respects_detail`, `compares_protobuf_semantically_and_respects_detail` |
+| Open documents | ODT / ODP / EPUB | `diff/documents_extra.rs`: ZIP + XML text/metadata extraction, embedded entry hashes | `compares_odt_semantically_and_respects_detail`, `compares_odp_semantically_and_respects_detail`, `compares_epub_semantically_and_respects_detail` |
+| Rich text / mail | RTF / EML | `diff/documents_extra.rs`: RTF paragraphs/control words; MIME headers, text/HTML bodies, attachments and hashes | `compares_rtf_semantically_and_respects_detail`, `compares_eml_semantically_and_respects_detail` |
+| Video | MP4/MKV/WebM/MOV/AVI/WMV/FLV | `diff/media.rs` (`symphonia`): container/tracks/codecs/dimensions, packet counts/bytes/hashes, audio waveform | `compares_video_semantically_and_respects_detail` |
+| Waveform | WAV and supported audio containers | `diff/media.rs` (`symphonia`): 100 ms RMS windows, max delta, changed-window count; concise keeps four windows, full keeps all | `compares_audio_waveform_and_respects_detail` |
+
 ## New Format Verification Details
 
 | Format | Tests / fixtures | Command | Result |

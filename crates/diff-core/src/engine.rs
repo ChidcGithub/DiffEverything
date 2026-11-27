@@ -236,6 +236,19 @@ impl DiffEngine {
             return Ok(node);
         }
 
+        if left_kind == FileKind::Video
+            && right_kind == FileKind::Video
+            && let Some(node) = self.compare_video_files(left, right, label, ctx)
+        {
+            ctx.summary.files_compared += 1;
+            if node.status == DiffStatus::Equal {
+                ctx.summary.files_equal += 1;
+            } else {
+                ctx.summary.files_changed += 1;
+            }
+            return Ok(node);
+        }
+
         if left_kind == FileKind::Audio
             && right_kind == FileKind::Audio
             && let Some(node) = self.compare_audio_files(left, right, label, ctx)
@@ -374,7 +387,26 @@ impl DiffEngine {
             | FileKind::GitIndex
             | FileKind::Ico
             | FileKind::SshPublicKey
-            | FileKind::Structured => {
+            | FileKind::Structured
+            | FileKind::Cbor
+            | FileKind::MessagePack
+            | FileKind::Protobuf
+            | FileKind::Parquet
+            | FileKind::Avro
+            | FileKind::Orc
+            | FileKind::Rtf
+            | FileKind::Eml
+            | FileKind::Odt
+            | FileKind::Odp
+            | FileKind::Epub
+            | FileKind::Squashfs
+            | FileKind::Snap
+            | FileKind::AppImage
+            | FileKind::Flatpak
+            | FileKind::Dmg
+            | FileKind::Msix
+            | FileKind::Aab
+            | FileKind::Ext4 => {
                 Ok(self
                     .compare_structured_bytes(label, hint, left, right, left_kind, right_kind, ctx))
             }
@@ -626,6 +658,7 @@ impl DiffEngine {
             FileKind::Audio | FileKind::Binary | FileKind::Unknown | FileKind::Directory => {
                 Ok(self.compare_binary_bytes(label, left, right, ctx))
             }
+            _ => Ok(self.compare_binary_bytes(label, left, right, ctx)),
         }
     }
 
@@ -766,6 +799,13 @@ impl DiffEngine {
         let content_differs = !compare_streams(left, right)
             .map(|result| result.equal)
             .unwrap_or(false);
+        let waveform = match (
+            crate::diff::media::audio_waveform(left),
+            crate::diff::media::audio_waveform(right),
+        ) {
+            (Ok(left), Ok(right)) => Some(crate::diff::media::waveform_diff(left, right)),
+            _ => None,
+        };
         let status = if tag_changes.is_empty() && property_changes == 0 && !content_differs {
             DiffStatus::Equal
         } else {
@@ -787,8 +827,51 @@ impl DiffEngine {
                 right_channels: right_properties.channels(),
                 tags: tag_changes,
                 content_differs,
+                waveform,
             }),
         ))
+    }
+
+    fn compare_video_files(
+        &self,
+        left: &Path,
+        right: &Path,
+        label: &str,
+        ctx: &mut Ctx,
+    ) -> Option<DiffNode> {
+        let left_value = match crate::diff::media::video_value(left) {
+            Ok(value) => value,
+            Err(error) => {
+                ctx.warn(format!(
+                    "{}: could not read video metadata ({error}); falling back to binary",
+                    display_label(label)
+                ));
+                return None;
+            }
+        };
+        let right_value = match crate::diff::media::video_value(right) {
+            Ok(value) => value,
+            Err(error) => {
+                ctx.warn(format!(
+                    "{}: could not read video metadata ({error}); falling back to binary",
+                    display_label(label)
+                ));
+                return None;
+            }
+        };
+        let diff = structured::compare_values(
+            "video",
+            &left_value,
+            &right_value,
+            self.options.max_json_changes,
+        );
+        ctx.summary.structured_changes += diff.changes.len();
+        let status = if diff.changes.is_empty() {
+            DiffStatus::Equal
+        } else {
+            DiffStatus::Different
+        };
+        Some(DiffNode::new(label, status, DiffBody::Structured(diff)))
     }
 
     fn compare_pdf_ocr(

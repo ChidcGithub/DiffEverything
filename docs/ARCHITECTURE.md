@@ -24,7 +24,12 @@ crates/
 │  │  ├─ table.rs            CSV/TSV table diff
 │  │  ├─ workbook.rs         XLSX/XLS/ODS cell diff
 │  │  ├─ documents.rs        PDF/OFD/DOCX/PPTX text extraction
+│  │  ├─ documents_extra.rs  ODT/ODP/EPUB/RTF/EML text and metadata
 │  │  ├─ image.rs            pixel-level diff
+│  │  ├─ media.rs            video metadata/packet hashes and audio RMS waveform
+│  │  ├─ packages.rs         SquashFS/Snap/AppImage/Flatpak/DMG/MSIX/AAB/ext4
+│  │  ├─ serialization.rs    CBOR/MessagePack/generic protobuf wire decoding
+│  │  ├─ tabular.rs          Parquet/Avro/ORC schema and record comparison
 │  │  └─ binary.rs           hex / byte-level diff
 │  ├─ src/render/
 │  │  ├─ ansi.rs             terminal report
