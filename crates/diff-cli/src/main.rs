@@ -5,6 +5,7 @@ use clap::builder::styling::{AnsiColor, Styles};
 use clap::{Parser, ValueEnum};
 use diff_core::engine::{DiffMode, UNLIMITED_FILE_BYTES};
 use diff_core::model::TOOL_VERSION;
+use diff_core::packers::detect_packers;
 use diff_core::progress::ProgressHandle;
 use diff_core::render::{self, RenderOptions};
 use diff_core::security::{self, ScanOutcome};
@@ -47,7 +48,7 @@ const LONG_VERSION: &str = concat!(
     "Repository: ",
     env!("CARGO_PKG_REPOSITORY"),
     "\n",
-    "Features:   linked files, Git history, aria2, Kaspersky, rich terminal UI"
+    "Features:   linked files, Git history, aria2, Kaspersky, packed-app detection, >90% verdict, rich terminal UI"
 );
 
 const CLI_AFTER_HELP: &str = "\
@@ -208,6 +209,24 @@ struct Cli {
     #[arg(help_heading = "Progress", long)]
     no_progress: bool,
 
+    /// Remove all analysis limits (file size, entries, rows, cells, depth and PDF pages)
+    #[arg(
+        help_heading = "Limits",
+        long,
+        conflicts_with_all = [
+            "max_rows",
+            "max_table_rows",
+            "max_workbook_cells",
+            "max_file_bytes",
+            "no_file_size_limit",
+            "max_entries",
+            "no_entry_limit",
+            "max_depth",
+            "pdf_max_pages"
+        ]
+    )]
+    no_limits: bool,
+
     /// Maximum hex rows / detail rows
     #[arg(help_heading = "Limits", long, default_value_t = 200, value_name = "N")]
     max_rows: usize,
@@ -236,6 +255,10 @@ struct Cli {
     /// Maximum entries in a directory or archive
     #[arg(help_heading = "Limits", long, value_name = "N")]
     max_entries: Option<usize>,
+
+    /// Remove directory and archive entry limits
+    #[arg(help_heading = "Limits", long, conflicts_with_all = ["max_entries", "no_limits"])]
+    no_entry_limit: bool,
 
     /// Maximum recursive archive/directory depth
     #[arg(help_heading = "Limits", long, default_value_t = 32, value_name = "N")]
@@ -600,21 +623,51 @@ fn run() -> Result<i32> {
         jobs: cli.jobs,
         ..DiffOptions::default()
     };
-    if let Some(max_file_bytes) = cli.max_file_bytes {
-        options.max_file_bytes = max_file_bytes;
-    } else if cli.no_file_size_limit {
+    if cli.no_limits {
         options.max_file_bytes = UNLIMITED_FILE_BYTES;
+        options.max_dir_entries = usize::MAX;
+        options.max_zip_entries = usize::MAX;
+        options.max_rows = usize::MAX;
+        options.max_hunks = usize::MAX;
+        options.max_json_changes = usize::MAX;
+        options.max_table_rows = usize::MAX;
+        options.max_workbook_cells = usize::MAX;
+        options.max_depth = usize::MAX;
         if !cli.quiet {
             eprintln!(
-                "warning: per-file size limit disabled; very large inputs may exhaust memory"
+                "warning: all analysis limits disabled; very large inputs may exhaust memory or take a long time"
             );
         }
+    } else {
+        if let Some(max_file_bytes) = cli.max_file_bytes {
+            options.max_file_bytes = max_file_bytes;
+        } else if cli.no_file_size_limit {
+            options.max_file_bytes = UNLIMITED_FILE_BYTES;
+            if !cli.quiet {
+                eprintln!(
+                    "warning: per-file size limit disabled; very large inputs may exhaust memory"
+                );
+            }
+        }
+        options.max_depth = cli.max_depth;
+        if let Some(max_entries) = cli.max_entries {
+            options.max_dir_entries = max_entries;
+            options.max_zip_entries = max_entries;
+        } else if cli.no_entry_limit {
+            options.max_dir_entries = usize::MAX;
+            options.max_zip_entries = usize::MAX;
+            if !cli.quiet {
+                eprintln!(
+                    "warning: directory/archive entry limit disabled; very large inputs may exhaust memory"
+                );
+            }
+        }
     }
-    options.max_depth = cli.max_depth;
-    if let Some(max_entries) = cli.max_entries {
-        options.max_dir_entries = max_entries;
-        options.max_zip_entries = max_entries;
-    }
+    let pdf_max_pages = if cli.no_limits {
+        usize::MAX
+    } else {
+        cli.pdf_max_pages
+    };
 
     let progress =
         if cli.quiet || cli.no_progress || (!cli.progress && !std::io::stderr().is_terminal()) {
@@ -804,6 +857,47 @@ fn run() -> Result<i32> {
     )?;
     let _remote_temp = remote_temp;
 
+    let mut packed_warnings = Vec::new();
+    let mut packed = Vec::new();
+    for (side, path) in [("left", &left), ("right", &right)] {
+        for packer in detect_packers(path) {
+            packed.push((side, packer));
+        }
+    }
+    if !packed.is_empty() {
+        if !cli.quiet {
+            eprintln!("warning: packed/protected application detected:");
+            for (side, packer) in &packed {
+                eprintln!("  {side}: {} ({})", packer.name, packer.evidence);
+            }
+            eprintln!(
+                "Analyzing or unpacking packed software may violate its license or applicable law."
+            );
+        }
+        if !cli.yes {
+            if !io::stdin().is_terminal() {
+                anyhow::bail!("packed application detected; rerun with -y to continue");
+            }
+            eprint!("Continue analysis? [y/N]: ");
+            io::stderr().flush().ok();
+            let mut answer = String::new();
+            io::stdin().read_line(&mut answer)?;
+            if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                eprintln!("analysis cancelled");
+                return Ok(2);
+            }
+        }
+        for (side, packer) in packed {
+            packed_warnings.push(format!(
+                "packed/protected application detected on {side}: {} ({})",
+                packer.name, packer.evidence
+            ));
+        }
+        packed_warnings.push(
+            "analysis of packed software may have legal or licensing implications".to_string(),
+        );
+    }
+
     let auto_scan = linked_mode && !cli.security_scan && !cli.no_security_scan;
     if auto_scan && !cli.quiet {
         eprintln!("Kaspersky: scanning linked inputs by default (use --no-security-scan to skip)");
@@ -919,7 +1013,7 @@ fn run() -> Result<i32> {
             language: cli.ocr_language.clone(),
             pdftoppm,
             dpi: cli.pdf_dpi,
-            max_pages: cli.pdf_max_pages,
+            max_pages: pdf_max_pages,
         });
     }
 
@@ -1136,7 +1230,7 @@ fn run() -> Result<i32> {
         let visual_options = diff_core::pdf_visual::PdfVisualOptions {
             pdftoppm,
             dpi: cli.pdf_dpi,
-            max_pages: cli.pdf_max_pages,
+            max_pages: pdf_max_pages,
         };
         let report =
             diff_core::pdf_visual::visual_pdf_diff(&left, &right, &output_dir, &visual_options)
@@ -1177,6 +1271,7 @@ fn run() -> Result<i32> {
         report.right.path = right_display;
         report
     };
+    report.warnings.extend(packed_warnings);
 
     if (cli.image_heatmap.is_some() || cli.image_side_by_side.is_some())
         && (report.left.kind != FileKind::Image || report.right.kind != FileKind::Image)

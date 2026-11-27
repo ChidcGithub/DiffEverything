@@ -43,6 +43,7 @@ code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
 .badge.equal { background: var(--add-bg); color: var(--add-text); }
 .badge.different, .badge.error { background: var(--del-bg); color: var(--del-text); }
 .badge.unsupported { background: #fff4d6; color: #8a5a00; }
+.verdict { margin: 0 0 18px; padding: 10px 14px; border: 1px solid #e7b6bc; border-radius: 10px; background: var(--del-bg); color: var(--del-text); font-weight: 700; letter-spacing: 0.02em; }
 .files { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
 .file { padding: 12px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
 .file .label { display: block; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -113,6 +114,12 @@ footer { margin-top: 34px; color: var(--muted); font-size: 12px; }
         status_class = status_class(report.status),
         status = report.status.label()
     );
+    if report.completely_different {
+        let _ = writeln!(
+            out,
+            r#"<div class="verdict">COMPLETELY DIFFERENT (&gt;90% changed)</div>"#
+        );
+    }
 
     let _ = writeln!(
         out,

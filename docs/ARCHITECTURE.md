@@ -15,6 +15,7 @@ crates/
 │  ├─ src/pdf_visual.rs      poppler page rendering, per-page visual diff, HTML/PDF reports
 │  ├─ src/progress.rs        thread-safe stderr progress sink
 │  ├─ src/security.rs        Kaspersky avp.com detection, scanning and report parsing
+│  ├─ src/packers.rs         packed executable/APK detection and legal-prompt metadata
 │  ├─ src/session.rs         session save/load
 │  ├─ src/sync.rs            directory sync plan/apply/backup
 │  ├─ src/diff/
@@ -216,9 +217,22 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - Kaspersky integration auto-detects `avp.com` under common installation paths, checks the `AVP*` service state, and runs `SCAN ... /i0 /R:<temp-report>`. `/i0` is report-only: no disinfection or deletion. Threats abort with exit code `2`; a missing installation or stopped service is a warning. Reports are decoded from UTF-8/UTF-16 and parsed for detection lines.
 - Linked inputs (HTTP(S) files and Git repositories) run the Kaspersky scan by default after download/clone. `--no-security-scan` skips it; `--security-scan` forces a scan for local comparisons.
 
+## Packed Application Detection
+
+- `packers.rs` inspects executable section names and strong signatures (UPX, ASPack, Themida, VMProtect, WinLicense, Enigma, MPRESS, PECompact, NSPack, Armadillo, Obsidium, PELock, tElock, MoleBox, BoxedApp, RLPack). APK/AAB inputs are checked for known shell libraries (360 Jiagu, Tencent Legu, Bangcle, Alibaba, Baidu, Naqu, NetEase).
+- Detection reads at most 64 MiB; larger executables are sampled at the head and tail so detection stays bounded.
+- The CLI prints the detected packer and evidence, warns about license/legal implications, and prompts `Continue analysis? [y/N]`. `-y` approves; non-interactive runs without `-y` exit 2. Accepted detections are appended to report warnings.
+
+## Completely Different Verdict
+
+- `DiffReport.completely_different` is true when more than 90% of the compared content changed (`COMPLETELY_DIFFERENT_THRESHOLD = 0.90`).
+- The ratio is format-aware: text changed lines / max line count, binary differing bytes / max byte length, image pixel ratio, table changed rows / max rows, workbook changed cells / max cells, notebook changed cells / max cells, audio changed waveform windows / total windows, and directory/archive changed entries / total entries.
+- Top-level containers use their entry ratio rather than the maximum child ratio, so one heavily changed file in a large directory does not mislabel the whole comparison.
+- ANSI, Markdown, HTML and JSON expose the verdict; the normal `DIFFERENT` status and exit code are unchanged.
+
 ## Version and Build Metadata
 
-- The package version is `1.0.1`; the release codename is `Toyger`.
+- The package version is `1.0.2`; the release codename is `Toyger`.
 - `diff-cli/build.rs` captures the git commit, Cargo target/profile and `rustc --version` at compile time. Missing git data falls back to `unknown`.
 - `-V` / `version` exposes the short semantic version; `--version` / `long_version` appends commit, build profile/target, rustc, license, repository and feature metadata. Build metadata is display-only and does not affect diff behavior.
 
@@ -230,6 +244,7 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - ZIP/TAR entries are read in memory with per-entry limits to avoid zip bombs.
 - Symbolic links are not followed.
 - All limits are exposed through `DiffOptions`. `--max-file-bytes` overrides the 64 MiB per-file detailed-diff limit; `--no-file-size-limit` sets `UNLIMITED_FILE_BYTES` (`u64::MAX / 2`) so the same code paths keep overflow-safe `limit + 1` reads while allowing arbitrarily large real files.
+- `--no-entry-limit` sets directory and archive entry limits to `usize::MAX`. `--no-limits` additionally removes row, hunk, structured-change, table, workbook, depth and PDF page limits; the individual limit flags conflict with it. These options intentionally trade memory/runtime for completeness.
 - The release profile enables fat LTO, one codegen unit, `opt-level = 3` and symbol stripping. The embedded Windows aria2 binary is zstd-compressed and decompressed on first use.
 - Directory/archive workers share an `Arc<GlobSet>` exclusion matcher, merge sorted keys in linear time, and avoid per-entry key clones and progress formatting when progress is disabled.
 - Both workspace crates forbid `unsafe` code. ANSI output sanitizes untrusted control characters, the TUI has an RAII terminal cleanup guard, and Kaspersky report reads are capped at 4 MiB.

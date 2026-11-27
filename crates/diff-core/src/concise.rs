@@ -177,6 +177,8 @@ mod tests {
                 format: "text".into(),
                 encoding_left: "utf-8".into(),
                 encoding_right: "utf-8".into(),
+                left_lines: 2,
+                right_lines: 2,
                 added_lines: 1,
                 removed_lines: 1,
                 hunks: vec![TextHunk {
@@ -232,6 +234,7 @@ mod tests {
             root: node,
             warnings: Vec::new(),
             elapsed_ms: 0,
+            completely_different: false,
             decompiled: None,
         }
     }

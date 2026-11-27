@@ -677,6 +677,7 @@ pub fn history_report(
         root,
         warnings,
         elapsed_ms: started.elapsed().as_millis(),
+        completely_different: false,
         decompiled: None,
     })
 }

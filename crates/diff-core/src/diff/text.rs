@@ -177,6 +177,8 @@ fn compare_text_impl(
         format: String::new(),
         encoding_left: String::new(),
         encoding_right: String::new(),
+        left_lines: original_left_lines.len(),
+        right_lines: original_right_lines.len(),
         added_lines,
         removed_lines,
         hunks,

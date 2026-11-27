@@ -108,6 +108,17 @@ fn render_plain_header(report: &DiffReport, options: &RenderOptions, out: &mut S
         "status : {}",
         paint_status(report.status, options.color)
     );
+    if report.completely_different {
+        let _ = writeln!(
+            out,
+            "verdict: {}",
+            paint(
+                "COMPLETELY DIFFERENT (>90% changed)",
+                BOLD_RED,
+                options.color
+            )
+        );
+    }
     let _ = writeln!(
         out,
         "summary: {}",
@@ -142,6 +153,18 @@ fn render_rich_header(report: &DiffReport, options: &RenderOptions, out: &mut St
         field_label("status", options),
         status_badge(report.status, options)
     );
+    if report.completely_different {
+        let _ = writeln!(
+            out,
+            "{} {}",
+            field_label("verdict", options),
+            paint(
+                "COMPLETELY DIFFERENT (>90% changed)",
+                BOLD_RED,
+                options.color
+            )
+        );
+    }
     let summary = summary_parts(&report.summary).join(" | ");
     let _ = writeln!(
         out,

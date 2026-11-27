@@ -1504,7 +1504,7 @@ fn version_reports_codename_and_build_info() {
     assert_eq!(long.status.code(), Some(0), "{}", stderr(&long));
     let text = stdout(&long);
     for field in [
-        "1.0.1 (Toyger)",
+        "1.0.2 (Toyger)",
         "Commit:",
         "Build:",
         "Rust:",
@@ -1517,7 +1517,7 @@ fn version_reports_codename_and_build_info() {
 
     let short = run_str(&["-V"]);
     assert_eq!(short.status.code(), Some(0), "{}", stderr(&short));
-    assert_eq!(stdout(&short).trim(), "diff-everything 1.0.1 (Toyger)");
+    assert_eq!(stdout(&short).trim(), "diff-everything 1.0.2 (Toyger)");
 }
 
 #[test]
@@ -1555,6 +1555,254 @@ fn rich_style_adds_banner_rules_and_line_numbers() {
     let auto_text = stdout(&auto);
     assert!(!auto_text.contains("===="), "{auto_text}");
     assert!(auto_text.starts_with("DiffEverything "), "{auto_text}");
+}
+
+#[test]
+fn entry_limits_can_be_removed_for_directories_and_archives() {
+    let dir = tempfile::tempdir().unwrap();
+    let left = dir.path().join("left");
+    let right = dir.path().join("right");
+    std::fs::create_dir_all(&left).unwrap();
+    std::fs::create_dir_all(&right).unwrap();
+    for index in 0..3 {
+        std::fs::write(
+            left.join(format!("file{index}.txt")),
+            format!("left{index}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            right.join(format!("file{index}.txt")),
+            format!("right{index}\n"),
+        )
+        .unwrap();
+    }
+
+    let capped = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--max-entries",
+        "1",
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_eq!(capped.status.code(), Some(1), "{}", stderr(&capped));
+    let capped_text = stdout(&capped);
+    assert!(
+        capped_text.contains("directory entry limit"),
+        "{capped_text}"
+    );
+    assert!(!capped_text.contains("file2.txt"), "{capped_text}");
+
+    let unlimited = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--no-entry-limit",
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_eq!(unlimited.status.code(), Some(1), "{}", stderr(&unlimited));
+    assert!(
+        stdout(&unlimited).contains("file2.txt"),
+        "{}",
+        stdout(&unlimited)
+    );
+    assert!(
+        stderr(&unlimited).contains("entry limit disabled"),
+        "{}",
+        stderr(&unlimited)
+    );
+
+    let left_zip = dir.path().join("left.zip");
+    let right_zip = dir.path().join("right.zip");
+    std::fs::write(
+        &left_zip,
+        zip_bytes(&[
+            ("a.txt", b"left-a"),
+            ("b.txt", b"left-b"),
+            ("c.txt", b"left-c"),
+        ]),
+    )
+    .unwrap();
+    std::fs::write(
+        &right_zip,
+        zip_bytes(&[
+            ("a.txt", b"right-a"),
+            ("b.txt", b"right-b"),
+            ("c.txt", b"right-c"),
+        ]),
+    )
+    .unwrap();
+
+    let capped_zip = run_str(&[
+        left_zip.to_str().unwrap(),
+        right_zip.to_str().unwrap(),
+        "--max-entries",
+        "1",
+        "--no-color",
+        "--no-progress",
+    ]);
+    let capped_zip_text = stdout(&capped_zip);
+    assert!(
+        capped_zip_text.contains("only the first 1 were read"),
+        "{capped_zip_text}"
+    );
+    assert!(!capped_zip_text.contains("c.txt"), "{capped_zip_text}");
+
+    let unlimited_zip = run_str(&[
+        left_zip.to_str().unwrap(),
+        right_zip.to_str().unwrap(),
+        "--no-limits",
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_eq!(
+        unlimited_zip.status.code(),
+        Some(1),
+        "{}",
+        stderr(&unlimited_zip)
+    );
+    let unlimited_zip_text = stdout(&unlimited_zip);
+    assert!(unlimited_zip_text.contains("c.txt"), "{unlimited_zip_text}");
+    assert!(
+        unlimited_zip_text.contains("archive: 3 entries"),
+        "{unlimited_zip_text}"
+    );
+    assert!(
+        stderr(&unlimited_zip).contains("all analysis limits disabled"),
+        "{}",
+        stderr(&unlimited_zip)
+    );
+
+    let conflict = run_str(&[
+        left_zip.to_str().unwrap(),
+        right_zip.to_str().unwrap(),
+        "--no-limits",
+        "--max-entries",
+        "1",
+    ]);
+    assert_eq!(conflict.status.code(), Some(2), "{}", stderr(&conflict));
+    assert!(
+        stderr(&conflict).contains("cannot be used with"),
+        "{}",
+        stderr(&conflict)
+    );
+}
+
+#[test]
+fn packed_executables_require_legal_confirmation() {
+    let source = std::fs::read(fixture("executable/hello-old")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let left = dir.path().join("packed-left");
+    let right = dir.path().join("packed-right");
+    let mut packed = source;
+    packed.extend_from_slice(b"\nUPX!");
+    std::fs::write(&left, &packed).unwrap();
+    std::fs::write(&right, &packed).unwrap();
+
+    let blocked = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--no-progress",
+    ]);
+    assert_eq!(blocked.status.code(), Some(2), "{}", stderr(&blocked));
+    assert!(
+        stderr(&blocked).contains("packed/protected application detected"),
+        "{}",
+        stderr(&blocked)
+    );
+    assert!(
+        stderr(&blocked).contains("rerun with -y"),
+        "{}",
+        stderr(&blocked)
+    );
+
+    let allowed = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "-y",
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_ne!(allowed.status.code(), Some(2), "{}", stderr(&allowed));
+    assert!(
+        stderr(&allowed).contains("packed/protected application detected"),
+        "{}",
+        stderr(&allowed)
+    );
+}
+
+#[test]
+fn completely_different_is_reported_above_90_percent() {
+    let dir = tempfile::tempdir().unwrap();
+    let left = dir.path().join("left.txt");
+    let right = dir.path().join("right.txt");
+    let near = dir.path().join("near.txt");
+    std::fs::write(
+        &left,
+        (0..100)
+            .map(|index| format!("old line {index}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    std::fs::write(
+        &right,
+        (0..100)
+            .map(|index| {
+                if index < 95 {
+                    format!("new line {index}\n")
+                } else {
+                    format!("old line {index}\n")
+                }
+            })
+            .collect::<String>(),
+    )
+    .unwrap();
+    std::fs::write(
+        &near,
+        (0..100)
+            .map(|index| {
+                if index < 5 {
+                    format!("new line {index}\n")
+                } else {
+                    format!("old line {index}\n")
+                }
+            })
+            .collect::<String>(),
+    )
+    .unwrap();
+
+    let output = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--format",
+        "json",
+        "--no-progress",
+    ]);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["completely_different"], true);
+    assert_eq!(value["status"], "different");
+
+    let ansi = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert!(
+        stdout(&ansi).contains("verdict: COMPLETELY DIFFERENT"),
+        "{}",
+        stdout(&ansi)
+    );
+
+    let near_output = run_str(&[
+        left.to_str().unwrap(),
+        near.to_str().unwrap(),
+        "--format",
+        "json",
+        "--no-progress",
+    ]);
+    let near_value: Value = serde_json::from_slice(&near_output.stdout).unwrap();
+    assert_eq!(near_value["completely_different"], false);
 }
 
 #[test]

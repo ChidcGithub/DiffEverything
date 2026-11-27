@@ -1,6 +1,6 @@
 # DiffEverything
 
-**Current release: 1.0.1 (Toyger)**
+**Current release: 1.0.2 (Toyger)**
 
 A Rust CLI that compares heterogeneous files by normalizing them into one diff tree. It does not replace `diff`; it adds format-aware comparison and multiple report formats.
 
@@ -32,7 +32,7 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 | Notebooks | `.ipynb` | Cell-level diff, global cell-id alignment, output/execution-count changes, three-way cell merge |
 | Merge | Text / notebooks / directories | Three-way merge; clean or conflict exit codes; directory output to a new directory |
 | Reports | — | ANSI, interactive TUI, JSON, Markdown, self-contained HTML, unified diff |
-| Workflow | — | Exit codes, `--name-only`, `--quiet`, `--summary-only`, streaming fallback for large files, directory sync, session save/load, external comparator delegation, parallel directory/archive comparison (`--jobs`), terminal progress, optional Kaspersky security scan |
+| Workflow | — | Exit codes, `--name-only`, `--quiet`, `--summary-only`, streaming fallback for large files, directory sync, session save/load, external comparator delegation, parallel directory/archive comparison (`--jobs`), terminal progress, packed-application legal prompt, completely-different (>90%) verdict, optional Kaspersky security scan |
 | Linked input | HTTP(S) files, Git repository URLs | Download with embedded aria2 (100 MiB confirmation guard, `-y`), compare locally; `--git-history` compares refs, HEAD and commit metadata (up to 2,000 commits); Kaspersky scan runs by default for linked inputs |
 | Remote input | WebDAV / HTTP(S) / SFTP / SMB | Download files or recursive directories, then compare locally; URL credentials or `--remote-user` / `--remote-password` |
 
@@ -97,6 +97,10 @@ Common examples:
 # Override or remove the per-file detailed-diff limit (default 64 MiB)
 .\target\release\diff-everything.exe old.iso new.iso --max-file-bytes 536870912
 .\target\release\diff-everything.exe old.iso new.iso --no-file-size-limit
+
+# Remove entry limits, or every analysis limit at once
+.\target\release\diff-everything.exe old.zip new.zip --no-entry-limit
+.\target\release\diff-everything.exe old.iso new.iso --no-limits
 
 # Head / tail / filter
 .\target\release\diff-everything.exe old.txt new.txt --head 20
@@ -177,13 +181,13 @@ Common examples:
 `--version` prints the codename plus build metadata; `-V` prints only the first line:
 
 ```text
-diff-everything 1.0.1 (Toyger)
+diff-everything 1.0.2 (Toyger)
 Commit:     <git-commit>
 Build:      release / <target-triple>
 Rust:       <rustc-version>
 License:    MIT
 Repository: https://github.com/ChidcGithub/DiffEverything
-Features:   linked files, Git history, aria2, Kaspersky, rich terminal UI
+Features:   linked files, Git history, aria2, Kaspersky, packed-app detection, >90% verdict, rich terminal UI
 ```
 
 ## CLI Options
@@ -224,7 +228,8 @@ Features:   linked files, Git history, aria2, Kaspersky, rich terminal UI
 | **Resource and recursion limits** | |
 | `--max-rows <N>` / `--max-table-rows <N>` / `--max-workbook-cells <N>` | Detail rows, table rows and workbook cell limits |
 | `--max-file-bytes <BYTES>` / `--no-file-size-limit` | Override or remove the 64 MiB per-file detailed-diff limit; removing it may exhaust memory |
-| `--max-entries <N>` | Directory and archive entry limit |
+| `--max-entries <N>` / `--no-entry-limit` | Directory/archive entry limit, or remove it entirely |
+| `--no-limits` | Remove all analysis limits: file size, entries, rows, cells, depth and PDF pages |
 | `--max-depth <N>` | Recursive directory/archive depth limit, default 32 (1..1024) |
 | **Merge and sync** | |
 | `--base <FILE\|DIR>` | Three-way merge base (a directory base enables directory merge) |
@@ -245,7 +250,7 @@ Features:   linked files, Git history, aria2, Kaspersky, rich terminal UI
 | `--pdf-visual` / `--pdftoppm <FILE>` / `--pdf-dpi <N>` / `--pdf-max-pages <N>` / `--pdf-output-dir <DIR>` | Rendered PDF visual diff |
 | `--ocr` / `--tesseract <FILE>` / `--tessdata <DIR>` / `--ocr-language <LANG>` | Image/PDF OCR and tool configuration |
 | **Decompilation and external tools** | |
-| `-y, --yes` | Accept decompilation and large-download (>100 MiB) prompts |
+| `-y, --yes` | Accept decompilation, large-download (>100 MiB) and packed-application prompts |
 | `--objdump <FILE>` | Optional external llvm-objdump/objdump; embedded pure-Rust disassemblers are the default |
 | `--external-tool <PROGRAM>` / `--external-arg <ARG>` | Delegate comparison to an external program; LEFT/RIGHT are appended |
 
@@ -290,7 +295,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 331 Rust tests (unit + integration + CLI)
+# 336 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -311,7 +316,7 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 - Example terminal layout (colors omitted):
 
 ```text
-DiffEverything 1.0.1 (Toyger)
+DiffEverything 1.0.2 (Toyger)
 ========================================================================
 left     fixtures\text\old.txt  [text | 105 B]
 right    fixtures\text\new.txt  [text | 160 B]
@@ -326,6 +331,8 @@ elapsed  7 ms
         2 | +- new text
 ```
 
+- Packed/protected executables and APKs are detected before comparison (UPX, ASPack, Themida, VMProtect, Enigma, MPRESS, PECompact, NSPack, Armadillo, Obsidium, PELock, tElock, MoleBox, BoxedApp, 360 Jiagu, Tencent Legu, Bangcle, Alibaba, Baidu, Naqu and NetEase shells). The CLI lists the detected packer and warns that analyzing or unpacking it may violate its license or applicable law, then asks whether to continue. `-y` accepts; non-interactive runs without `-y` stop with exit code `2`.
+- When more than 90% of a single file or top-level container changed, the report adds a `COMPLETELY DIFFERENT` verdict. The ratio uses changed lines, bytes, pixels, table rows, workbook cells, audio waveform windows or container entries depending on the format; JSON exposes it as `completely_different`.
 - `--security-scan` uses only Kaspersky's local `avp.com` interface. Common installation paths are auto-detected; `--kaspersky <FILE>` overrides detection. Scans use `/i0` (report only), so files are never disinfected or deleted. Detected threats abort with exit code `2`; a missing Kaspersky installation or stopped service produces a warning and the diff continues. `--scan-timeout` bounds each scan.
 - Linked inputs (HTTP(S) files and Git repository URLs) are scanned automatically with the same local Kaspersky interface. `--no-security-scan` disables this default; `--security-scan` still enables it manually for any comparison.
 
@@ -361,7 +368,7 @@ elapsed  7 ms
 - `--external-tool` receives resolved local paths; remote inputs are downloaded to a temporary directory first.
 - SFTP does not verify host fingerprints by default. Use `--sftp-known-hosts <FILE>` in production; missing or mismatched keys are rejected.
 - Legacy `.doc` / `.ppt` fall back to binary; `.xls` / `.ods` are supported by calamine.
-- Default limits are 64 MiB per file, 10,000 directory entries and 2,000 archive entries; all are configurable. `--no-file-size-limit` removes the per-file detailed-diff limit and can consume a lot of memory on huge inputs.
+- Default limits are 64 MiB per file, 10,000 directory entries and 2,000 archive entries; all are configurable. `--no-file-size-limit` removes the per-file limit, `--no-entry-limit` removes directory/archive entry caps, and `--no-limits` removes all analysis limits. These flags can consume a lot of memory or time on huge inputs.
 - Encrypted ZIPs and archives with unsupported compression fall back to binary with a warning.
 
 ## License

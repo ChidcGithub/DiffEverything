@@ -22,6 +22,9 @@ pub fn render(report: &DiffReport) -> String {
         human_size(report.right.size)
     );
     let _ = writeln!(out, "| Status | **{}** |", report.status.label());
+    if report.completely_different {
+        let _ = writeln!(out, "| Result | **COMPLETELY DIFFERENT (>90% changed)** |");
+    }
     let _ = writeln!(out, "| Elapsed | {} ms |", report.elapsed_ms);
     let _ = writeln!(
         out,

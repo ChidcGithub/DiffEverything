@@ -3,6 +3,7 @@ use std::path::Path;
 
 pub const TOOL_NAME: &str = "DiffEverything";
 pub const TOOL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (Toyger)");
+pub const COMPLETELY_DIFFERENT_THRESHOLD: f64 = 0.90;
 
 /// Broad category of an input artifact. Handlers are selected from this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -314,6 +315,9 @@ pub struct DiffReport {
     pub root: DiffNode,
     pub warnings: Vec<String>,
     pub elapsed_ms: u128,
+    /// True when more than 90% of the compared content changed.
+    #[serde(default)]
+    pub completely_different: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decompiled: Option<DecompilationDiff>,
 }
@@ -393,6 +397,10 @@ pub struct TextDiff {
     pub format: String,
     pub encoding_left: String,
     pub encoding_right: String,
+    #[serde(default)]
+    pub left_lines: usize,
+    #[serde(default)]
+    pub right_lines: usize,
     pub added_lines: usize,
     pub removed_lines: usize,
     pub hunks: Vec<TextHunk>,

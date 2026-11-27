@@ -13,6 +13,7 @@ pub mod image_export;
 pub mod merge;
 pub mod model;
 pub mod ocr;
+pub mod packers;
 pub mod patch;
 pub mod pdf_visual;
 pub mod progress;

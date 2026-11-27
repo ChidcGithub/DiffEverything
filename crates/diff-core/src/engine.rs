@@ -169,6 +169,7 @@ impl DiffEngine {
                 return Err(error);
             }
         };
+        let completely_different = is_completely_different(&root);
         let mut report = DiffReport {
             tool: TOOL_NAME,
             version: TOOL_VERSION,
@@ -179,6 +180,7 @@ impl DiffEngine {
             root,
             warnings: ctx.warnings,
             elapsed_ms: started.elapsed().as_millis(),
+            completely_different,
             decompiled: None,
         };
         if let Some(options) = &self.options.decompile
@@ -3074,6 +3076,82 @@ impl Ctx {
             self.warn(warning);
         }
     }
+}
+
+fn fraction(changed: u64, total: u64) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        (changed as f64 / total as f64).clamp(0.0, 1.0)
+    }
+}
+
+fn body_difference_ratio(body: &DiffBody) -> f64 {
+    match body {
+        DiffBody::Text(diff) => fraction(
+            diff.added_lines.max(diff.removed_lines) as u64,
+            diff.left_lines.max(diff.right_lines) as u64,
+        ),
+        DiffBody::Binary(diff) => fraction(diff.differing_bytes, diff.left_len.max(diff.right_len)),
+        DiffBody::Image(diff) => diff.diff_ratio.clamp(0.0, 1.0),
+        DiffBody::Table(diff) => fraction(
+            diff.rows.len() as u64,
+            diff.left_rows.max(diff.right_rows) as u64,
+        ),
+        DiffBody::Workbook(diff) => {
+            let left_cells: u64 = diff
+                .sheets
+                .iter()
+                .map(|sheet| u64::from(sheet.left_rows) * u64::from(sheet.left_columns))
+                .sum();
+            let right_cells: u64 = diff
+                .sheets
+                .iter()
+                .map(|sheet| u64::from(sheet.right_rows) * u64::from(sheet.right_columns))
+                .sum();
+            let changed: u64 = diff
+                .sheets
+                .iter()
+                .map(|sheet| sheet.cells.len() as u64)
+                .sum();
+            fraction(changed, left_cells.max(right_cells))
+        }
+        DiffBody::Notebook(diff) => fraction(
+            (diff.cells_added + diff.cells_removed + diff.changed_cells.len()) as u64,
+            diff.left_cells.max(diff.right_cells) as u64,
+        ),
+        DiffBody::Audio(diff) => diff.waveform.as_ref().map_or(0.0, |waveform| {
+            fraction(
+                waveform.changed_windows as u64,
+                waveform.left.len().max(waveform.right.len()) as u64,
+            )
+        }),
+        DiffBody::OneSided(_) => 1.0,
+        _ => 0.0,
+    }
+}
+
+fn is_completely_different(root: &DiffNode) -> bool {
+    let ratio = match &root.body {
+        DiffBody::Directory(diff) => {
+            let changed = diff
+                .entries
+                .iter()
+                .filter(|entry| entry.status.is_different())
+                .count() as u64;
+            fraction(changed, diff.total_entries as u64)
+        }
+        DiffBody::Archive(diff) => {
+            let changed = diff
+                .entries
+                .iter()
+                .filter(|entry| entry.status.is_different())
+                .count() as u64;
+            fraction(changed, diff.total_entries as u64)
+        }
+        body => body_difference_ratio(body),
+    };
+    ratio > COMPLETELY_DIFFERENT_THRESHOLD
 }
 
 struct EntryComparison {
