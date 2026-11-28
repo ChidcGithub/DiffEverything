@@ -697,6 +697,9 @@ fn render_node(node: &DiffNode, level: usize, out: &mut String) {
             if let Some(first) = diff.first_difference {
                 let _ = writeln!(out, "- First difference: `0x{first:08x}`");
             }
+            if let Some(tail) = &diff.tail {
+                let _ = writeln!(out, "- Tail: {}", tail.description());
+            }
             if diff.truncated {
                 let _ = writeln!(out, "- Detail rows were truncated");
             }

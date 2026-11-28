@@ -1028,6 +1028,10 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
             if let Some(first) = diff.first_difference {
                 header.push_str(&format!(", first at 0x{first:08x}"));
             }
+            if let Some(tail) = &diff.tail {
+                header.push_str(", ");
+                header.push_str(&tail.description());
+            }
             if diff.truncated {
                 header.push_str(" (detail truncated)");
             }

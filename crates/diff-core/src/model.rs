@@ -1045,7 +1045,37 @@ pub struct BinaryDiff {
     pub differing_bytes: u64,
     pub first_difference: Option<u64>,
     pub rows: Vec<HexRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail: Option<BinaryTail>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BinaryTail {
+    /// Side that has bytes past the common prefix.
+    pub side: PresenceSide,
+    pub start: u64,
+    pub length: u64,
+    /// A single repeated byte value when the whole tail is padding/uniform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeated_byte: Option<u8>,
+}
+
+impl BinaryTail {
+    pub fn description(&self) -> String {
+        let side = match self.side {
+            PresenceSide::LeftOnly => "left",
+            PresenceSide::RightOnly => "right",
+        };
+        let repeated = self
+            .repeated_byte
+            .map(|byte| format!(" (all 0x{byte:02x})"))
+            .unwrap_or_default();
+        format!(
+            "{side} has {} extra byte(s) at 0x{:08x}{repeated}",
+            self.length, self.start
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

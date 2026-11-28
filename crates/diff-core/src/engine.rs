@@ -823,11 +823,37 @@ impl DiffEngine {
         // file size) before the contents are materialized and release it when
         // the node is built, so the parallel work set stays inside
         // `max_inflight_bytes` no matter how many workers there are.
-        let permit = self
-            .gate
-            .acquire(left_meta.len().saturating_add(right_meta.len()));
-        let left_bytes = read_file_bounded(left, limit)?;
-        let right_bytes = read_file_bounded(right, limit)?;
+        let input_bytes = left_meta.len().saturating_add(right_meta.len());
+        let file_progress = depth == 0
+            && input_bytes >= 2 * 1024 * 1024
+            && self.progress.as_ref().is_some_and(ProgressHandle::enabled);
+        if file_progress && let Some(progress) = &self.progress {
+            progress
+                .start_file_analysis(&format!("Analyzing {}", display_label(&hint)), input_bytes);
+        }
+        let permit = self.gate.acquire(input_bytes);
+        let left_bytes = if file_progress {
+            read_file_bounded_with_progress(
+                left,
+                limit,
+                self.progress.as_ref().expect("file progress exists"),
+                0,
+                input_bytes,
+            )?
+        } else {
+            read_file_bounded(left, limit)?
+        };
+        let right_bytes = if file_progress {
+            read_file_bounded_with_progress(
+                right,
+                limit,
+                self.progress.as_ref().expect("file progress exists"),
+                left_meta.len(),
+                input_bytes,
+            )?
+        } else {
+            read_file_bounded(right, limit)?
+        };
         if left_bytes.len() as u64 > limit || right_bytes.len() as u64 > limit {
             drop(permit);
             return self.stream_summary_node(
@@ -842,6 +868,9 @@ impl DiffEngine {
         }
 
         ctx.summary.files_compared += 1;
+        if file_progress && let Some(progress) = &self.progress {
+            progress.set_message(&format!("Analyzing {}", display_label(&hint)));
+        }
 
         if left_bytes == right_bytes && self.options.pdf_visual.is_none() {
             ctx.summary.files_equal += 1;
@@ -979,6 +1008,7 @@ impl DiffEngine {
                 differing_bytes: stream.differing_bytes,
                 first_difference: stream.first_difference,
                 rows: Vec::new(),
+                tail: None,
                 truncated: true,
             }),
         ))
@@ -5264,6 +5294,33 @@ fn read_file_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let mut file = fs::File::open(path)?;
     let mut bytes = Vec::new();
     read_bounded(&mut file, limit, &mut bytes)?;
+    Ok(bytes)
+}
+
+fn read_file_bounded_with_progress(
+    path: &Path,
+    limit: u64,
+    progress: &ProgressHandle,
+    base: u64,
+    total: u64,
+) -> Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    let cap = limit.saturating_add(1);
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let remaining = cap.saturating_sub(bytes.len() as u64);
+        if remaining == 0 {
+            break;
+        }
+        let take = (buffer.len() as u64).min(remaining) as usize;
+        let read = file.read(&mut buffer[..take])?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        progress.set_file_bytes(base.saturating_add(bytes.len() as u64).min(total));
+    }
     Ok(bytes)
 }
 

@@ -1,4 +1,4 @@
-use crate::model::{BinaryDiff, HexRow};
+use crate::model::{BinaryDiff, BinaryTail, HexRow, PresenceSide};
 
 const BYTES_PER_ROW: usize = 16;
 
@@ -6,6 +6,35 @@ const BYTES_PER_ROW: usize = 16;
 /// the scan still counts every differing byte so the summary is exact.
 pub fn compare_binary(left: &[u8], right: &[u8], max_rows: usize) -> BinaryDiff {
     let max_len = left.len().max(right.len());
+    if left.len() != right.len() {
+        let common = left.len().min(right.len());
+        if left[..common] == right[..common] {
+            let (side, extra) = if left.len() > right.len() {
+                (PresenceSide::LeftOnly, &left[common..])
+            } else {
+                (PresenceSide::RightOnly, &right[common..])
+            };
+            let repeated_byte = extra
+                .first()
+                .copied()
+                .filter(|byte| extra.iter().all(|candidate| candidate == byte));
+            return BinaryDiff {
+                left_len: left.len() as u64,
+                right_len: right.len() as u64,
+                differing_bytes: extra.len() as u64,
+                first_difference: Some(common as u64),
+                rows: Vec::new(),
+                tail: Some(BinaryTail {
+                    side,
+                    start: common as u64,
+                    length: extra.len() as u64,
+                    repeated_byte,
+                }),
+                truncated: false,
+            };
+        }
+    }
+
     let mut differing_bytes = 0u64;
     let mut first_difference = None;
     let mut rows = Vec::new();
@@ -52,6 +81,7 @@ pub fn compare_binary(left: &[u8], right: &[u8], max_rows: usize) -> BinaryDiff 
         differing_bytes,
         first_difference,
         rows,
+        tail: None,
         truncated,
     }
 }

@@ -6,6 +6,12 @@
 - Rust 1.100.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
 
+## Development after v1.2.1
+
+- Single top-level files larger than 2 MiB now report byte-oriented progress while reading, with a background ticker that keeps the spinner moving during CPU-heavy parsing. Directory and archive comparisons keep their entry-count progress.
+- Binary diffs collapse a common-prefix-only tail into one summary line such as `left has 1047552 extra byte(s) at 0x00000400 (all 0xff)` instead of emitting thousands of empty right-side hex rows.
+- Regression tests cover the binary tail summary; local verification: `cargo fmt --all -- --check`, clippy, 407 workspace tests.
+
 ## Release Verification (v1.2.1 - Toyger)
 
 The 1.2.1 work implements the M0–M4 engine performance and intelligence plan:

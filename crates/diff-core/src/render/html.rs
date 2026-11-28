@@ -1034,12 +1034,16 @@ fn render_body(node: &DiffNode, out: &mut String) {
         DiffBody::Binary(diff) => {
             let _ = writeln!(
                 out,
-                "<p class=\"meta\">Binary diff · {} → {} bytes · {} differing byte(s){}{}</p>",
+                "<p class=\"meta\">Binary diff · {} → {} bytes · {} differing byte(s){}{}{}</p>",
                 diff.left_len,
                 diff.right_len,
                 diff.differing_bytes,
                 diff.first_difference
                     .map(|first| format!(" · first at 0x{first:08x}"))
+                    .unwrap_or_default(),
+                diff.tail
+                    .as_ref()
+                    .map(|tail| format!(" · {}", esc(&tail.description())))
                     .unwrap_or_default(),
                 if diff.truncated { " · truncated" } else { "" }
             );
