@@ -11,7 +11,7 @@
 The 1.3.0 work implements the M0–M4 engine performance and intelligence plan:
 
 - M0: reproducible synthetic corpus and best-of-five wall-time / peak-RSS / read-byte / expanded-byte runner (`.private/bench/`), plus a counting-allocator harness; results are in [PERFORMANCE.md](PERFORMANCE.md).
-- M1: one PDF parse per side with each page content stream decoded once for text and blocks; one reusable `Package` per Office/OpenDocument side with streamed media hashing; parallel left/right document and workbook parsing; text common-prefix/suffix trimming with patience for large middles; structured equal-subtree short-circuiting; archive size pre-checks and early hunk stopping. Measured: PDF 9.29×, multipart DOCX 4.02×, multipart ODT 3.61× (targets ≥2× / ≥1.5×).
+- M1: one PDF parse per side with each page content stream decoded once for text and blocks; one reusable `Package` per Office/OpenDocument side with streamed media hashing; parallel left/right document and workbook parsing; text common-prefix/suffix trimming with patience for large middles; structured equal-subtree short-circuiting; archive size pre-checks and early hunk stopping. Measured: PDF 8.30×, multipart DOCX 3.80×, multipart ODT 3.67× (targets ≥2× / ≥1.5×).
 - M2: unmatched directory and archive entries are paired by `(size, SHA-256)` and reported as `renamed_from`; JSON, ANSI, HTML, Markdown, unified and `--name-only` render the previous path; completeness and exit codes are unchanged.
 - M3: text patience/unique-anchor mode, word-highlight threshold, structured array edge trimming and stable 128-bit fingerprints, CSV/TSV implicit unique key with warning, worksheet moved row/column detection with formula-normalised signatures.
 - M4: streaming ZIP, uncompressed TAR, CPIO and AR/DEB comparisons scan metadata once and read payloads on demand; ZIP changed pairs are materialised in bounded 32 MiB batches; Office media hashing reuses one 64 KiB buffer. 10k-entry ZIP peak RSS −89%; TAR −48%. 7z, RPM, CAB, ISO and XAR still materialise entries.
@@ -21,12 +21,14 @@ Verification performed locally:
 ```text
 cargo fmt --all                                      passed
 cargo clippy --workspace --all-targets -- -D warnings passed
-cargo test --workspace                               passed: 12 + 79 + 178 + 125 = 394 tests
+cargo test --workspace                               passed: 12 + 79 + 182 + 131 = 404 tests
 cargo build --release                                passed
 scripts/smoke-test.ps1 (release binary)              passed: 189 passed, 0 failed
 ```
 
-Benchmark highlights versus the published 1.2.0 binary: 49 MB near-identical text 8.67× faster with 47% lower peak RSS and 99.99% fewer allocations; 1000-page PDF 9.29× faster; multipart DOCX 4.02×; multipart ODT 3.61×; PPTX 2.37×; XLSX 1.57×; 10k-entry ZIP 1.66× faster with 89% lower peak RSS; 10k-entry TAR 1.36× faster with 48% lower peak RSS. The 10k directory case is within noise because rename hashing trades a small amount of work for a smarter report. Full numbers, read/expanded bytes and allocation counts are in [PERFORMANCE.md](PERFORMANCE.md). No release tag or published artifact was created for 1.3.0 in this step.
+Resource-safety review fixes verified by dedicated tests: container tasks release the in-flight permit before recursive expansion; DOCX/PPTX/ODT and XLSX reads are charged to the shared expanded-byte budget; sparse XLSX bounding boxes are rejected before Calamine allocates them; `max_workbook_cells` is shared across sheets; 7z entry-cap skips mark the archive incomplete; `DirectoryDiff.truncated` uses the merged scan flag; and CSV/DOCX table readers enforce input caps.
+
+Benchmark highlights versus the published 1.2.0 binary: 49 MB near-identical text 8.20× faster with 47% lower peak RSS and 99.99% fewer allocations; 1000-page PDF 8.30× faster; multipart DOCX 3.80×; multipart ODT 3.67×; PPTX 2.18×; XLSX 1.33×; 10k-entry ZIP 1.55× faster with 89% lower peak RSS; 10k-entry TAR 1.35× faster with 48% lower peak RSS. The 10k directory case is within noise because rename hashing trades a small amount of work for a smarter report. Full numbers, read/expanded bytes and allocation counts are in [PERFORMANCE.md](PERFORMANCE.md). No release tag or published artifact was created for 1.3.0 in this step.
 
 ## Release Verification (v1.2.0 - Toyger)
 

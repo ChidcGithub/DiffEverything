@@ -401,6 +401,10 @@ fn directory_scan_stops_at_the_entry_limit_and_stays_indeterminate() {
     // entry limit, so the equal verdict only covers the compared part.
     assert_eq!(report.status, DiffStatus::Equal);
     assert_eq!(report.completeness, ComparisonCompleteness::Truncated);
+    let DiffBody::Directory(directory) = &report.root.body else {
+        panic!("expected directory diff, got {:?}", report.root.body);
+    };
+    assert!(directory.truncated);
     assert!(
         report
             .warnings
@@ -729,6 +733,182 @@ fn tar_bytes(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
             .unwrap();
     }
     builder.into_inner().unwrap()
+}
+
+#[test]
+fn nested_archives_do_not_deadlock_with_a_tiny_inflight_gate() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left.zip");
+    let right = dir.path().join("right.zip");
+    let inner_left = zip_bytes(&[("a.txt", b"old\n")]);
+    let inner_right = zip_bytes(&[("a.txt", b"new\n")]);
+    fs::write(&left, zip_bytes(&[("inner.zip", inner_left.as_slice())])).unwrap();
+    fs::write(&right, zip_bytes(&[("inner.zip", inner_right.as_slice())])).unwrap();
+
+    let report = DiffEngine::new(DiffOptions {
+        max_inflight_bytes: 1,
+        ..DiffOptions::default()
+    })
+    .compare(&left, &right)
+    .unwrap();
+    assert_eq!(report.status, DiffStatus::Different);
+    assert_eq!(report.completeness, ComparisonCompleteness::Complete);
+}
+
+#[test]
+fn sparse_xlsx_ranges_are_rejected_before_dense_allocation() {
+    use rust_xlsxwriter::Workbook;
+
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left.xlsx");
+    let right = dir.path().join("right.xlsx");
+    for (path, near) in [(&left, "near-left"), (&right, "near-right")] {
+        let mut workbook = Workbook::new();
+        let sheet = workbook.add_worksheet();
+        sheet.write(0, 0, near).unwrap();
+        sheet.write(1_048_575, 16_383, "far").unwrap();
+        workbook.save(path).unwrap();
+    }
+
+    let report = DiffEngine::new(DiffOptions {
+        max_workbook_cells: 100,
+        ..DiffOptions::default()
+    })
+    .compare(&left, &right)
+    .unwrap();
+    assert_eq!(
+        report.completeness,
+        ComparisonCompleteness::Truncated,
+        "{:?} {:?}",
+        report.root.body,
+        report.warnings
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("safe input limit")),
+        "{:?}",
+        report.warnings
+    );
+    let DiffBody::Workbook(workbook) = &report.root.body else {
+        panic!("expected workbook diff, got {:?}", report.root.body);
+    };
+    assert!(workbook.input_truncated);
+}
+
+#[test]
+fn docx_parts_are_charged_against_the_expanded_budget() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left.docx");
+    let right = dir.path().join("right.docx");
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>{}</w:t></w:r></w:p></w:body></w:document>",
+        "payload ".repeat(4_000)
+    );
+    let bytes = zip_bytes(&[("word/document.xml", xml.as_bytes())]);
+    let right_xml = xml.replace("payload", "changed");
+    let right_bytes = zip_bytes(&[("word/document.xml", right_xml.as_bytes())]);
+    fs::write(&left, &bytes).unwrap();
+    fs::write(&right, &right_bytes).unwrap();
+
+    let report = DiffEngine::new(DiffOptions {
+        max_expanded_bytes: 100,
+        ..DiffOptions::default()
+    })
+    .compare(&left, &right)
+    .unwrap();
+    assert_eq!(report.completeness, ComparisonCompleteness::Truncated);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("expanded-bytes budget exhausted")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn seven_zip_entry_cap_marks_the_archive_incomplete() {
+    let report = DiffEngine::new(DiffOptions {
+        max_zip_entries: 1,
+        ..DiffOptions::default()
+    })
+    .compare(&fixture("archives/old.7z"), &fixture("archives/new.7z"))
+    .unwrap();
+    assert_eq!(report.completeness, ComparisonCompleteness::Truncated);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("archive entry limit")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn xlsx_parts_are_charged_against_the_expanded_budget() {
+    use rust_xlsxwriter::Workbook;
+
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left.xlsx");
+    let right = dir.path().join("right.xlsx");
+    for (path, value) in [(&left, 1), (&right, 2)] {
+        let mut workbook = Workbook::new();
+        let sheet = workbook.add_worksheet();
+        sheet.write(0, 0, value).unwrap();
+        workbook.save(path).unwrap();
+    }
+
+    let report = DiffEngine::new(DiffOptions {
+        max_expanded_bytes: 8,
+        ..DiffOptions::default()
+    })
+    .compare(&left, &right)
+    .unwrap();
+    assert_eq!(report.completeness, ComparisonCompleteness::Truncated);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("expanded-bytes budget exhausted")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn odt_parts_are_charged_against_the_expanded_budget() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left.odt");
+    let right = dir.path().join("right.odt");
+    let content = |value: &str| {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><office:document-content xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\"><office:body><office:text><text:p>{value}</text:p></office:text></office:body></office:document-content>"
+        )
+    };
+    let left_bytes = zip_bytes(&[("content.xml", content("left").as_bytes())]);
+    let right_bytes = zip_bytes(&[("content.xml", content("right").as_bytes())]);
+    fs::write(&left, left_bytes).unwrap();
+    fs::write(&right, right_bytes).unwrap();
+
+    let report = DiffEngine::new(DiffOptions {
+        max_expanded_bytes: 8,
+        ..DiffOptions::default()
+    })
+    .compare(&left, &right)
+    .unwrap();
+    assert_eq!(report.completeness, ComparisonCompleteness::Truncated);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("expanded-bytes budget exhausted")),
+        "{:?}",
+        report.warnings
+    );
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use crate::diff::package::Package;
 use crate::diff::{table, text};
+use crate::engine::ResourceBudget;
 use crate::model::{
     BlockChange, ChangeKind, DocumentDiff, DocumentTableDiff, FieldChange, MediaChange,
     PresentationDiff, ShapeChange, SlideChange,
@@ -8,6 +9,7 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// One open ZIP package per input side. DOCX/PPTX/ODT/ODP parsing and media
 /// hashing share it, so the central directory is scanned once instead of once
@@ -688,16 +690,33 @@ fn operation_array_text(operands: &[lopdf::Object]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-pub fn compare_mixed_documents(
+#[allow(clippy::too_many_arguments)]
+pub fn compare_mixed_documents_with_budget(
     left_kind: crate::model::FileKind,
     left: &[u8],
     right_kind: crate::model::FileKind,
     right: &[u8],
     max_blocks: usize,
     max_table_rows: usize,
+    budget: Arc<ResourceBudget>,
+    max_entry_bytes: u64,
 ) -> std::result::Result<DocumentDiff, String> {
-    let left_doc = parse_mixed_side(left_kind, left, max_blocks)?;
-    let right_doc = parse_mixed_side(right_kind, right, max_blocks)?;
+    let left_doc = parse_mixed_side(
+        left_kind,
+        left,
+        max_blocks,
+        max_table_rows,
+        budget.clone(),
+        max_entry_bytes,
+    )?;
+    let right_doc = parse_mixed_side(
+        right_kind,
+        right,
+        max_blocks,
+        max_table_rows,
+        budget,
+        max_entry_bytes,
+    )?;
     if left_doc.blocks.is_empty()
         && left_doc.tables.is_empty()
         && right_doc.blocks.is_empty()
@@ -729,11 +748,14 @@ fn parse_mixed_side(
     kind: crate::model::FileKind,
     bytes: &[u8],
     max_blocks: usize,
+    max_table_rows: usize,
+    budget: Arc<ResourceBudget>,
+    max_entry_bytes: u64,
 ) -> std::result::Result<MixedDocument, String> {
     match kind {
         crate::model::FileKind::Docx => {
-            let package = Package::new(bytes)?;
-            let parsed = parse_docx(&package, max_blocks)?;
+            let package = Package::with_limits(bytes, Some(budget.clone()), max_entry_bytes)?;
+            let parsed = parse_docx(&package, max_blocks, max_table_rows)?;
             Ok(MixedDocument {
                 blocks: parsed.blocks,
                 tables: parsed.tables,
@@ -742,7 +764,7 @@ fn parse_mixed_side(
             })
         }
         crate::model::FileKind::Odt => {
-            let package = Package::new(bytes)?;
+            let package = Package::with_limits(bytes, Some(budget.clone()), max_entry_bytes)?;
             let parsed = parse_odf_document(&package, "odt", max_blocks)?;
             Ok(MixedDocument {
                 blocks: parsed.blocks,
@@ -780,7 +802,7 @@ fn parse_mixed_side(
             })
         }
         crate::model::FileKind::Pptx => {
-            let package = Package::new(bytes)?;
+            let package = Package::with_limits(bytes, Some(budget.clone()), max_entry_bytes)?;
             let (slides, truncated) = parse_pptx_slides(&package, max_blocks)?;
             let mut blocks = Vec::new();
             let mut tables = Vec::new();
@@ -825,7 +847,7 @@ fn parse_mixed_side(
             })
         }
         crate::model::FileKind::Odp => {
-            let package = Package::new(bytes)?;
+            let package = Package::with_limits(bytes, Some(budget.clone()), max_entry_bytes)?;
             let parsed = parse_odf_document(&package, "odp", max_blocks)?;
             Ok(MixedDocument {
                 blocks: parsed.blocks,
@@ -841,24 +863,26 @@ fn parse_mixed_side(
     }
 }
 
-pub fn compare_odf_documents(
+pub fn compare_odf_documents_with_budget(
     left: &[u8],
     right: &[u8],
     format: &str,
     max_blocks: usize,
     max_table_rows: usize,
+    budget: Arc<ResourceBudget>,
+    max_entry_bytes: u64,
 ) -> std::result::Result<DocumentDiff, String> {
     let (left_result, right_result) = rayon::join(
         || -> std::result::Result<(ParsedOdf, MediaHashes), String> {
-            let package = Package::new(left)?;
+            let package = Package::with_limits(left, Some(budget.clone()), max_entry_bytes)?;
             let parsed = parse_odf_document(&package, format, max_blocks)?;
-            let media = media_hashes(&package, "Pictures/");
+            let media = media_hashes(&package, "Pictures/")?;
             Ok((parsed, media))
         },
         || -> std::result::Result<(ParsedOdf, MediaHashes), String> {
-            let package = Package::new(right)?;
+            let package = Package::with_limits(right, Some(budget.clone()), max_entry_bytes)?;
             let parsed = parse_odf_document(&package, format, max_blocks)?;
-            let media = media_hashes(&package, "Pictures/");
+            let media = media_hashes(&package, "Pictures/")?;
             Ok((parsed, media))
         },
     );
@@ -1219,23 +1243,25 @@ struct ParsedDocx {
 
 /// Compares two DOCX packages at paragraph/table granularity instead of
 /// flattening the whole body into one text blob.
-pub fn compare_docx_documents(
+pub fn compare_docx_documents_with_budget(
     left: &[u8],
     right: &[u8],
     max_blocks: usize,
     max_table_rows: usize,
+    budget: Arc<ResourceBudget>,
+    max_entry_bytes: u64,
 ) -> std::result::Result<DocumentDiff, String> {
     let (left_result, right_result) = rayon::join(
         || -> std::result::Result<(ParsedDocx, MediaHashes), String> {
-            let package = Package::new(left)?;
-            let parsed = parse_docx(&package, max_blocks)?;
-            let media = media_hashes(&package, "word/media/");
+            let package = Package::with_limits(left, Some(budget.clone()), max_entry_bytes)?;
+            let parsed = parse_docx(&package, max_blocks, max_table_rows)?;
+            let media = media_hashes(&package, "word/media/")?;
             Ok((parsed, media))
         },
         || -> std::result::Result<(ParsedDocx, MediaHashes), String> {
-            let package = Package::new(right)?;
-            let parsed = parse_docx(&package, max_blocks)?;
-            let media = media_hashes(&package, "word/media/");
+            let package = Package::with_limits(right, Some(budget.clone()), max_entry_bytes)?;
+            let parsed = parse_docx(&package, max_blocks, max_table_rows)?;
+            let media = media_hashes(&package, "word/media/")?;
             Ok((parsed, media))
         },
     );
@@ -1257,13 +1283,17 @@ pub fn compare_docx_documents(
     })
 }
 
-fn parse_docx(package: &Package<'_>, max_blocks: usize) -> std::result::Result<ParsedDocx, String> {
+fn parse_docx(
+    package: &Package<'_>,
+    max_blocks: usize,
+    max_table_rows: usize,
+) -> std::result::Result<ParsedDocx, String> {
     if !package.contains("word/document.xml") {
         return Err("DOCX has no word/document.xml".to_string());
     }
     let mut parsed = ParsedDocx::default();
     let xml = package.read_text("word/document.xml")?;
-    let part = parse_word_part(&xml, "body", max_blocks)?;
+    let part = parse_word_part(&xml, "body", max_blocks, max_table_rows)?;
     parsed.blocks.extend(part.blocks);
     parsed.tables.extend(part.tables);
     parsed.truncated |= part.truncated;
@@ -1292,7 +1322,7 @@ fn parse_docx(package: &Package<'_>, max_blocks: usize) -> std::result::Result<P
         }
         let xml = package.read_text(&name)?;
         let remaining = max_blocks.saturating_sub(parsed.blocks.len());
-        let part = parse_word_part(&xml, &prefix, remaining)?;
+        let part = parse_word_part(&xml, &prefix, remaining, max_table_rows)?;
         parsed.blocks.extend(part.blocks);
         parsed.tables.extend(part.tables);
         parsed.truncated |= part.truncated;
@@ -1304,9 +1334,11 @@ fn parse_word_part(
     xml: &str,
     prefix: &str,
     max_blocks: usize,
+    max_table_rows: usize,
 ) -> std::result::Result<ParsedPart, String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
+    let mut table_truncated = false;
     let mut parsed = ParsedPart::default();
     let mut paragraph_index = 0usize;
     let mut table_index = 0usize;
@@ -1439,12 +1471,19 @@ fn parse_word_part(
                 }
                 "tr" if in_table => {
                     if !row.is_empty() {
-                        table_rows.push(std::mem::take(&mut row));
+                        if table_rows.len() < max_table_rows {
+                            table_rows.push(std::mem::take(&mut row));
+                        } else {
+                            row.clear();
+                            table_truncated = true;
+                        }
                     }
                 }
                 "tbl" if in_table => {
                     in_table = false;
                     table_index += 1;
+                    parsed.truncated |= table_truncated;
+                    table_truncated = false;
                     let path = format!("{prefix}/tbl[{table_index}]");
                     if !table_rows.is_empty() {
                         let columns = table_rows.iter().map(Vec::len).max().unwrap_or(0);
@@ -1876,16 +1915,21 @@ fn rows_to_csv(rows: &[Vec<String>]) -> Vec<u8> {
     writer.into_inner().unwrap_or_default()
 }
 
-fn media_hashes(package: &Package<'_>, prefix: &str) -> MediaHashes {
-    package
-        .names
-        .iter()
-        .filter(|name| name.starts_with(prefix))
-        .filter_map(|name| {
-            let (hash, size) = package.hash_entry(name).ok().flatten()?;
-            Some((name.clone(), (hash, size)))
-        })
-        .collect()
+fn media_hashes(package: &Package<'_>, prefix: &str) -> std::result::Result<MediaHashes, String> {
+    let mut hashes = MediaHashes::new();
+    for name in package.names.iter().filter(|name| name.starts_with(prefix)) {
+        match package.hash_entry(name) {
+            Ok(Some((hash, size))) => {
+                hashes.insert(name.clone(), (hash, size));
+            }
+            Ok(None) => {}
+            Err(error) if error.contains("expanded-bytes budget exhausted") => {
+                return Err(error);
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(hashes)
 }
 
 fn compare_media_maps(
@@ -1947,19 +1991,21 @@ struct ParsedSlide {
 }
 
 /// Compares two PPTX packages by slide, then by shape inside each slide.
-pub fn compare_pptx_documents(
+pub fn compare_pptx_documents_with_budget(
     left: &[u8],
     right: &[u8],
     max_slides: usize,
     max_table_rows: usize,
+    budget: Arc<ResourceBudget>,
+    max_entry_bytes: u64,
 ) -> std::result::Result<PresentationDiff, String> {
     let (left_result, right_result) = rayon::join(
         || {
-            let package = Package::new(left)?;
+            let package = Package::with_limits(left, Some(budget.clone()), max_entry_bytes)?;
             parse_pptx_slides(&package, max_slides)
         },
         || {
-            let package = Package::new(right)?;
+            let package = Package::with_limits(right, Some(budget.clone()), max_entry_bytes)?;
             parse_pptx_slides(&package, max_slides)
         },
     );
@@ -2792,3 +2838,73 @@ fn normalize_text(text: String) -> String {
 #[cfg(test)]
 #[path = "../../tests/unit/diff/documents.rs"]
 mod tests;
+
+pub fn compare_mixed_documents(
+    left_kind: crate::model::FileKind,
+    left: &[u8],
+    right_kind: crate::model::FileKind,
+    right: &[u8],
+    max_blocks: usize,
+    max_table_rows: usize,
+) -> std::result::Result<DocumentDiff, String> {
+    compare_mixed_documents_with_budget(
+        left_kind,
+        left,
+        right_kind,
+        right,
+        max_blocks,
+        max_table_rows,
+        Arc::new(ResourceBudget::default()),
+        u64::MAX / 2,
+    )
+}
+
+pub fn compare_odf_documents(
+    left: &[u8],
+    right: &[u8],
+    format: &str,
+    max_blocks: usize,
+    max_table_rows: usize,
+) -> std::result::Result<DocumentDiff, String> {
+    compare_odf_documents_with_budget(
+        left,
+        right,
+        format,
+        max_blocks,
+        max_table_rows,
+        Arc::new(ResourceBudget::default()),
+        u64::MAX / 2,
+    )
+}
+
+pub fn compare_docx_documents(
+    left: &[u8],
+    right: &[u8],
+    max_blocks: usize,
+    max_table_rows: usize,
+) -> std::result::Result<DocumentDiff, String> {
+    compare_docx_documents_with_budget(
+        left,
+        right,
+        max_blocks,
+        max_table_rows,
+        Arc::new(ResourceBudget::default()),
+        u64::MAX / 2,
+    )
+}
+
+pub fn compare_pptx_documents(
+    left: &[u8],
+    right: &[u8],
+    max_slides: usize,
+    max_table_rows: usize,
+) -> std::result::Result<PresentationDiff, String> {
+    compare_pptx_documents_with_budget(
+        left,
+        right,
+        max_slides,
+        max_table_rows,
+        Arc::new(ResourceBudget::default()),
+        u64::MAX / 2,
+    )
+}

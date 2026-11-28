@@ -7,6 +7,7 @@ struct ParsedTable {
     rows: Vec<Vec<String>>,
     column_index: BTreeMap<String, usize>,
     delimiter: u8,
+    input_truncated: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -42,8 +43,9 @@ pub fn compare_tables_with_options(
     options: &TableCompareOptions<'_>,
     max_rows: usize,
 ) -> std::result::Result<TableDiff, String> {
-    let left_table = parse_table(left, format)?;
-    let right_table = parse_table(right, format)?;
+    let input_row_limit = max_rows.saturating_mul(64).max(10_000);
+    let left_table = parse_table(left, format, input_row_limit)?;
+    let right_table = parse_table(right, format, input_row_limit)?;
     let ignored: BTreeSet<&str> = options.ignore_columns.iter().map(String::as_str).collect();
 
     let left_headers: BTreeSet<&String> = left_table.headers.iter().collect();
@@ -193,6 +195,7 @@ pub fn compare_tables_with_options(
         rows,
         duplicate_keys,
         truncated,
+        input_truncated: left_table.input_truncated || right_table.input_truncated,
     })
 }
 
@@ -614,7 +617,11 @@ fn row_cells(
         .collect()
 }
 
-fn parse_table(bytes: &[u8], format: &str) -> std::result::Result<ParsedTable, String> {
+fn parse_table(
+    bytes: &[u8],
+    format: &str,
+    max_input_rows: usize,
+) -> std::result::Result<ParsedTable, String> {
     // Decode BOM/UTF-16/legacy encodings before handing the bytes to the CSV
     // reader; otherwise a GBK or UTF-16 file becomes invalid UTF-8 noise and
     // an UTF-8 BOM sticks to the first header.
@@ -639,8 +646,13 @@ fn parse_table(bytes: &[u8], format: &str) -> std::result::Result<ParsedTable, S
         .collect();
 
     let mut rows = Vec::new();
+    let mut input_truncated = false;
     for record in reader.records() {
         let record = record.map_err(|error| error.to_string())?;
+        if rows.len() >= max_input_rows {
+            input_truncated = true;
+            break;
+        }
         rows.push(record.iter().map(|value| value.to_string()).collect());
     }
 
@@ -649,6 +661,7 @@ fn parse_table(bytes: &[u8], format: &str) -> std::result::Result<ParsedTable, S
         rows,
         column_index,
         delimiter,
+        input_truncated,
     })
 }
 

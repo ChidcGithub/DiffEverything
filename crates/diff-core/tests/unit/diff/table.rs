@@ -57,6 +57,14 @@ fn decodes_bom_and_keeps_duplicate_keys() {
 }
 
 #[test]
+fn input_row_cap_stops_parsing_and_marks_truncation() {
+    let data = b"value\n1\n2\n3\n4\n";
+    let table = parse_table(data, "csv", 2).unwrap();
+    assert_eq!(table.rows.len(), 2);
+    assert!(table.input_truncated);
+}
+
+#[test]
 fn infers_a_unique_column_for_row_alignment() {
     let left = b"id,name\n1,Alice\n2,Bob\n";
     let right = b"name,id\nBob,2\nAlice,1\n";

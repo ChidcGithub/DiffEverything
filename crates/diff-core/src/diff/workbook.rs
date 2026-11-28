@@ -1,33 +1,50 @@
 use crate::diff::package::Package;
+use crate::engine::ResourceBudget;
 use crate::model::{CellChange, FieldChange, SheetDiff, SheetMove, SheetRename, WorkbookDiff};
 use calamine::{Data, Reader, SheetVisible, open_workbook_auto_from_rs};
 use quick_xml::events::Event;
 use quick_xml::{Reader as XmlReader, XmlVersion};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-pub fn compare_workbooks(
+#[allow(clippy::too_many_arguments)]
+pub fn compare_workbooks_with_budget(
     left: &[u8],
     right: &[u8],
     format: &str,
     max_cells: usize,
     compare_formulas: bool,
     ignore_columns: &[String],
+    budget: Arc<ResourceBudget>,
+    max_entry_bytes: u64,
 ) -> std::result::Result<WorkbookDiff, String> {
     let parse_side = |bytes: &[u8]| -> std::result::Result<_, String> {
-        let book = read_workbook(bytes)?;
+        let package = Package::with_limits(bytes, Some(budget.clone()), max_entry_bytes).ok();
         let meta = if format == "xlsx" {
-            Package::new(bytes)
-                .ok()
-                .and_then(|package| read_xlsx_metadata(&package).ok())
+            match package.as_ref() {
+                Some(package) => {
+                    if package.contains("xl/sharedStrings.xml")
+                        && !package.charge_declared_entry("xl/sharedStrings.xml")?
+                    {
+                        return Err(
+                            "expanded-bytes budget exhausted while reserving XLSX shared strings"
+                                .to_string(),
+                        );
+                    }
+                    Some(read_xlsx_metadata(package)?)
+                }
+                None => None,
+            }
         } else {
             None
         };
-        Ok((book, meta))
+        let (book, input_truncated) = read_workbook(bytes, max_cells, meta.as_ref())?;
+        Ok((book, meta, input_truncated))
     };
     let (left_side, right_side) = rayon::join(|| parse_side(left), || parse_side(right));
-    let (left_book, left_meta) = left_side?;
-    let (right_book, right_meta) = right_side?;
+    let (left_book, left_meta, left_input_truncated) = left_side?;
+    let (right_book, right_meta, right_input_truncated) = right_side?;
     let ignored_columns: BTreeSet<String> = ignore_columns
         .iter()
         .map(|column| column.trim().to_ascii_uppercase())
@@ -82,7 +99,8 @@ pub fn compare_workbooks(
     let sheets_moved = detect_sheet_moves(&left_names, &right_names, &common_left, &common_right);
 
     let mut sheets = Vec::new();
-    let mut truncated = false;
+    let mut truncated = left_input_truncated || right_input_truncated;
+    let mut remaining_cells = max_cells;
     for name in &common_left {
         let left_sheet = left_book.sheet(name).expect("common sheet exists");
         let right_sheet = right_book.sheet(name).expect("common sheet exists");
@@ -90,9 +108,10 @@ pub fn compare_workbooks(
             left_sheet,
             right_sheet,
             compare_formulas,
-            max_cells,
+            remaining_cells,
             &ignored_columns,
         );
+        remaining_cells = remaining_cells.saturating_sub(cells.len());
         truncated |= sheet_truncated;
         let left_sheet_meta = left_meta
             .as_ref()
@@ -149,6 +168,7 @@ pub fn compare_workbooks(
         defined_names,
         sheets,
         truncated,
+        input_truncated: left_input_truncated || right_input_truncated,
     })
 }
 
@@ -639,6 +659,7 @@ fn column_is_ignored(column: u32, ignored: &BTreeSet<String>) -> bool {
 #[derive(Debug, Clone, Default)]
 struct SheetMeta {
     merges: BTreeSet<String>,
+    used_range: Option<(u32, u32, u32, u32)>,
     hidden_rows: BTreeSet<u32>,
     hidden_columns: BTreeSet<u32>,
     drawings: BTreeSet<String>,
@@ -737,12 +758,26 @@ fn read_xlsx_metadata(package: &Package<'_>) -> std::result::Result<XlsxMetadata
             continue;
         };
         let mut sheet = SheetMeta::default();
+        let mut min_row = u32::MAX;
+        let mut max_row = 0u32;
+        let mut min_column = u32::MAX;
+        let mut max_column = 0u32;
         let mut reader = XmlReader::from_str(&sheet_xml);
         reader.config_mut().trim_text(true);
         loop {
             match reader.read_event() {
                 Ok(Event::Start(event)) | Ok(Event::Empty(event)) => {
                     match event.local_name().as_ref() {
+                        "c" => {
+                            if let Some(reference) = attribute_value(&event, "r")
+                                && let Some((row, column)) = parse_cell_reference(&reference)
+                            {
+                                min_row = min_row.min(row);
+                                max_row = max_row.max(row);
+                                min_column = min_column.min(column);
+                                max_column = max_column.max(column);
+                            }
+                        }
                         "mergeCell" => {
                             if let Some(reference) = attribute_value(&event, "ref") {
                                 sheet.merges.insert(reference);
@@ -787,6 +822,9 @@ fn read_xlsx_metadata(package: &Package<'_>) -> std::result::Result<XlsxMetadata
         }
         sheet.charts = read_sheet_charts(package, part, &sheet.drawings);
         sheet.conditional_formats = read_conditional_formats(&sheet_xml, &dxfs);
+        if min_row != u32::MAX {
+            sheet.used_range = Some((min_row, max_row, min_column, max_column));
+        }
         metadata.sheets.insert(sheet_name, sheet);
     }
     Ok(metadata)
@@ -1229,7 +1267,11 @@ impl Workbook {
     }
 }
 
-fn read_workbook(bytes: &[u8]) -> std::result::Result<Workbook, String> {
+fn read_workbook(
+    bytes: &[u8],
+    max_cells: usize,
+    metadata: Option<&XlsxMetadata>,
+) -> std::result::Result<(Workbook, bool), String> {
     let cursor = std::io::Cursor::new(bytes);
     let mut workbook = open_workbook_auto_from_rs(cursor).map_err(|error| error.to_string())?;
     let names = workbook.sheet_names().to_owned();
@@ -1244,8 +1286,38 @@ fn read_workbook(bytes: &[u8]) -> std::result::Result<Workbook, String> {
         })
         .collect();
     let mut sheets = Vec::with_capacity(names.len());
+    let mut input_truncated = false;
 
     for name in names {
+        // Calamine stores a dense rectangle. A sparse sheet with cells at A1
+        // and XFD1048576 would otherwise allocate the full 17-billion-cell
+        // bounding box before any comparison limit applies. Preflight the raw
+        // sheet XML and skip the sheet when the real used range is too large.
+        let safety_limit =
+            u64::try_from(max_cells.saturating_mul(64).max(1_000_000)).unwrap_or(u64::MAX);
+        let oversized_range = metadata
+            .and_then(|metadata| metadata.sheets.get(&name))
+            .and_then(|sheet| sheet.used_range)
+            .map(|(min_row, max_row, min_column, max_column)| {
+                let rows = u64::from(max_row - min_row) + 1;
+                let columns = u64::from(max_column - min_column) + 1;
+                rows.saturating_mul(columns) > safety_limit
+            })
+            .unwrap_or(false);
+        if oversized_range {
+            input_truncated = true;
+            sheets.push((
+                name.clone(),
+                Sheet {
+                    rows: 0,
+                    columns: 0,
+                    cells: Vec::new(),
+                    formulas: Vec::new(),
+                    hidden: visibility.get(&name).copied().unwrap_or(false),
+                },
+            ));
+            continue;
+        }
         let range = match workbook.worksheet_range(&name) {
             Ok(range) => range,
             Err(error) => return Err(format!("sheet {name}: {error}")),
@@ -1285,7 +1357,29 @@ fn read_workbook(bytes: &[u8]) -> std::result::Result<Workbook, String> {
         ));
     }
 
-    Ok(Workbook { sheets })
+    Ok((Workbook { sheets }, input_truncated))
+}
+
+fn parse_cell_reference(reference: &str) -> Option<(u32, u32)> {
+    let mut column = 0u32;
+    let mut index = 0usize;
+    for byte in reference.bytes() {
+        if !byte.is_ascii_alphabetic() {
+            break;
+        }
+        column = column
+            .checked_mul(26)?
+            .checked_add(u32::from(byte.to_ascii_uppercase() - b'A') + 1)?;
+        index += 1;
+    }
+    if index == 0 {
+        return None;
+    }
+    let row = reference[index..].parse::<u32>().ok()?;
+    if row == 0 || column == 0 {
+        return None;
+    }
+    Some((row - 1, column - 1))
 }
 
 fn data_to_string(data: &Data) -> String {
@@ -1327,3 +1421,23 @@ fn column_name(mut column: u32) -> String {
 #[cfg(test)]
 #[path = "../../tests/unit/diff/workbook.rs"]
 mod tests;
+
+pub fn compare_workbooks(
+    left: &[u8],
+    right: &[u8],
+    format: &str,
+    max_cells: usize,
+    compare_formulas: bool,
+    ignore_columns: &[String],
+) -> std::result::Result<WorkbookDiff, String> {
+    compare_workbooks_with_budget(
+        left,
+        right,
+        format,
+        max_cells,
+        compare_formulas,
+        ignore_columns,
+        Arc::new(ResourceBudget::default()),
+        u64::MAX / 2,
+    )
+}

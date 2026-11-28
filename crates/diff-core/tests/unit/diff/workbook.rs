@@ -131,6 +131,53 @@ fn reports_moved_columns_without_cell_changes() {
 }
 
 #[test]
+fn sparse_sheet_preflight_rejects_the_dense_bounding_box() {
+    use rust_xlsxwriter::Workbook;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sparse.xlsx");
+    let mut workbook = Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet.write(0, 0, "near").unwrap();
+    sheet.write(1_048_575, 16_383, "far").unwrap();
+    workbook.save(&path).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let package = Package::new(&bytes).unwrap();
+    let metadata = read_xlsx_metadata(&package).unwrap();
+    let (min_row, max_row, min_column, max_column) =
+        metadata.sheets["Sheet1"].used_range.expect("used range");
+    assert!(min_row == 0 && min_column == 0);
+    assert!(max_row == 1_048_575 && max_column == 16_383);
+
+    let diff = compare_workbooks(&bytes, &bytes, "xlsx", 100, false, &[]).unwrap();
+    assert!(diff.input_truncated, "{diff:?}");
+}
+
+#[test]
+fn workbook_cell_budget_is_shared_across_sheets() {
+    use rust_xlsxwriter::Workbook;
+
+    let dir = tempfile::tempdir().unwrap();
+    let left = dir.path().join("left.xlsx");
+    let right = dir.path().join("right.xlsx");
+    for (path, suffix) in [(&left, "L"), (&right, "R")] {
+        let mut workbook = Workbook::new();
+        for sheet_name in ["One", "Two"] {
+            let sheet = workbook.add_worksheet();
+            sheet.set_name(sheet_name).unwrap();
+            sheet.write(0, 0, format!("{suffix}-{sheet_name}")).unwrap();
+        }
+        workbook.save(path).unwrap();
+    }
+    let left_bytes = std::fs::read(&left).unwrap();
+    let right_bytes = std::fs::read(&right).unwrap();
+    let diff = compare_workbooks(&left_bytes, &right_bytes, "xlsx", 1, false, &[]).unwrap();
+    let total: usize = diff.sheets.iter().map(|sheet| sheet.cells.len()).sum();
+    assert_eq!(total, 1, "{diff:?}");
+    assert!(diff.truncated);
+}
+
+#[test]
 fn detects_xlsx_conditional_formatting() {
     use rust_xlsxwriter::{ConditionalFormatCell, ConditionalFormatCellRule, Format, Workbook};
 

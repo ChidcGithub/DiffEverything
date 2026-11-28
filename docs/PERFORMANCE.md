@@ -50,19 +50,23 @@ Office or a PDF toolchain.
 
 | Case | 1.2.0 ms | 1.3.0 ms | Speedup | 1.2.0 peak MB | 1.3.0 peak MB | Δ memory | Read MB (old/new) | Expanded MB (old/new) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `text-prefix` | 83.3 | 28.3 | 2.94× | 55.8 | 18.3 | −67% | 9.1 / 9.1 | 0 / 0 |
-| `text-prefix-large` | 1390.9 | 160.5 | 8.67× | 548.3 | 291.0 | −47% | 93.1 / 93.1 | 0 / 0 |
-| `text-insert` | 42.3 | 27.3 | 1.55× | 37.8 | 14.4 | −62% | 4.6 / 4.6 | 0 / 0 |
-| `json-large` | 177.3 | 121.5 | 1.46× | 123.3 | 107.6 | −13% | 6.3 / 6.3 | 0 / 0 |
-| `directory-10k` | 1720.6 | 1751.5 | 0.98× | 18.9 | 19.4 | +3% | 0.8 / 0.8 | 0 / 0 |
-| `zip-10k` | 226.0 | 136.2 | 1.66× | 334.8 | 38.0 | −89% | 3.6 / 3.6 | 164 / 164 |
-| `tar-10k` | 177.4 | 130.7 | 1.36× | 295.6 | 153.4 | −48% | 97.7 / 97.7 | 80.1 / 80.1 |
-| `pdf-1000` | 248.1 | 26.7 | 9.29× | 15.3 | 18.0 | +18% | 0.5 / 0.5 | 0 / 0 |
-| `docx-1000` | 11.6 | 10.6 | 1.09× | 3.8 | 3.9 | +3% | 0 / 0 | 0 / 0 |
-| `docx-multipart` | 55.9 | 13.9 | 4.02× | 9.1 | 3.9 | −57% | 0.2 / 0.2 | 0 / 0 |
-| `odt-multipart` | 48.4 | 13.4 | 3.61× | 9.3 | 3.8 | −59% | 0.1 / 0.1 | 0 / 0 |
-| `pptx-500` | 29.8 | 12.6 | 2.37× | 9.1 | 3.7 | −59% | 0.3 / 0.3 | 0 / 0 |
-| `xlsx-100` | 96.2 | 61.1 | 1.57× | 14.6 | 15.4 | +5% | 0.3 / 0.3 | 0 / 0 |
+| `text-prefix` | 83.3 | 28.3 | 2.94× | 55.8 | 4.2 | −92% | 9.1 / 9.1 | 0 / 0 |
+| `text-prefix-large` | 1390.9 | 169.7 | 8.20× | 548.3 | 291.0 | −47% | 93.1 / 93.1 | 0 / 0 |
+| `text-insert` | 42.3 | 19.0 | 2.23× | 37.8 | 4.1 | −89% | 4.6 / 4.6 | 0 / 0 |
+| `json-large` | 177.3 | 115.7 | 1.53× | 123.3 | 108.6 | −12% | 6.3 / 6.3 | 0 / 0 |
+| `directory-10k` | 1720.6 | 1775.3 | 0.97× | 18.9 | 19.4 | +3% | 0.8 / 0.8 | 0 / 0 |
+| `zip-10k` | 226.0 | 145.4 | 1.55× | 334.8 | 37.6 | −89% | 3.6 / 3.6 | 164 / 164 |
+| `tar-10k` | 177.4 | 131.2 | 1.35× | 295.6 | 153.1 | −48% | 97.7 / 97.7 | 80.1 / 80.1 |
+| `pdf-1000` | 248.1 | 29.9 | 8.30× | 15.3 | 19.5 | +27% | 0.5 / 0.5 | 0 / 0 |
+| `docx-1000` | 11.6 | 17.8 | 0.65× | 3.8 | 3.7 | −3% | 0 / 0 | 0 / 0.13 |
+| `docx-multipart` | 55.9 | 14.7 | 3.80× | 9.1 | 4.1 | −55% | 0.2 / 0.2 | 0 / 1.12 |
+| `odt-multipart` | 48.4 | 13.2 | 3.67× | 9.3 | 4.3 | −54% | 0.1 / 0.1 | 0 / 1.41 |
+| `pptx-500` | 29.8 | 13.7 | 2.18× | 9.1 | 3.6 | −60% | 0.3 / 0.3 | 0 / 0.01 |
+| `xlsx-100` | 96.2 | 72.4 | 1.33× | 14.6 | 15.2 | +4% | 0.3 / 0.3 | 0 / 3.16 |
+
+Office `expanded_bytes` now includes decompressed document parts and media,
+which the 1.2.0 baseline did not charge. Read bytes count OS-level file reads,
+while expanded bytes count the shared comparison budget.
 
 Representative real fixtures (best of five):
 
@@ -87,9 +91,9 @@ a detached `959cf7c` worktree for the baseline.
 |---|---:|---:|---:|---:|
 | `text-prefix-large` | 4,000,584 | 471 | 1300.7 | 477.1 |
 | `json-large` | 2,230,095 | 925,216 | 147.2 | 101.0 |
-| `pdf-1000` | 484,641 | 149,647 | 132.1 | 30.9 |
-| `docx-multipart` | 912,515 | 66,587 | 229.9 | 79.5 |
-| `odt-multipart` | 366,437 | 19,633 | 157.4 | 61.0 |
+| `pdf-1000` | 484,805 | 149,747 | 132.0 | 30.9 |
+| `docx-multipart` | 912,515 | 66,591 | 229.9 | 79.5 |
+| `odt-multipart` | 366,437 | 19,643 | 157.4 | 61.0 |
 | `zip-10k` | 481,843 | 522,576 | 1729.3 | 1749.2 |
 | `tar-10k` | 358,125 | 240,866 | 586.7 | 375.0 |
 | `directory-10k` | 401,977 | 405,856 | 52.6 | 55.1 |
@@ -106,12 +110,12 @@ the M1 targets. This round removes the remaining duplicate PDF content-stream
 decode and adds realistic multipart Office corpora:
 
 - PDF: text extraction and positioned blocks now share one decoded
-  `Content` stream per page. **9.29×** on the 1000-page corpus (target ≥2×).
-- DOCX: **4.02×** on the 2000-paragraph / 80-part / 160-media corpus
+  `Content` stream per page. **8.30×** on the 1000-page corpus (target ≥2×).
+- DOCX: **3.80×** on the 2000-paragraph / 80-part / 160-media corpus
   (target ≥1.5×). The single-part 1000-paragraph file is at parity because it
   is only 3 KB and process startup dominates.
-- ODT: **3.61×** on the 2000-paragraph / 200-media corpus (target ≥1.5×).
-- PPTX: **2.37×**, XLSX: **1.57×**.
+- ODT: **3.67×** on the 2000-paragraph / 200-media corpus (target ≥1.5×).
+- PPTX: **2.18×**, XLSX: **1.33×**.
 
 ## M4 streaming coverage
 
@@ -146,6 +150,34 @@ decode and adds realistic multipart Office corpora:
   `(size, SHA-256)` as `renamed_from`; CSV/TSV infer a unique implicit key when
   no `--key` is given; worksheets detect moved rows/columns and normalise
   formula signatures.
+
+## Resource-safety hardening
+
+The post-review hardening pass closes the resource-safety gaps found around
+the 1.3.0 engine:
+
+- **Recursive in-flight gate**: container comparisons release their read
+  permit before expanding nested entries. Leaf reads stay gated; a parent
+  archive can no longer wait for children that need capacity the parent holds.
+  Expanded entries remain charged to `ResourceBudget`.
+- **Office ZIP budget**: `Package` now has a per-entry bound and the shared
+  `ResourceBudget`. DOCX/PPTX/ODT/ODP part reads and media hashing are charged;
+  exceeding the budget returns a truncated document node instead of falling
+  back to an unbudgeted text extractor. XLSX metadata, worksheet preflight and
+  declared shared strings are charged before Calamine parses them.
+- **Sparse XLSX ranges**: the worksheet XML scan records the actual used-cell
+  bounding box during metadata parsing. A sheet at `A1` plus `XFD1048576` is
+  skipped before Calamine's dense `Range` allocation, and the report is marked
+  `Truncated` via `WorkbookDiff.input_truncated`.
+- **Global workbook cell cap**: `max_workbook_cells` is now one shared budget
+  across all sheets instead of a fresh cap per sheet.
+- **7z completeness**: entry counting uses a `seen_entries` counter (oversized
+  entries included) and calls `ctx.omit()` at the cap.
+- **Directory consistency**: `DirectoryDiff.truncated` now receives the merged
+  comparison/scan truncation flag.
+- **CSV/DOCX table input caps**: CSV parsing stops at a bounded input-row cap
+  and marks `TableDiff.input_truncated`; DOCX tables stop retaining rows at the
+  table limit and propagate the existing document truncation flag.
 
 ## Known trade-offs
 

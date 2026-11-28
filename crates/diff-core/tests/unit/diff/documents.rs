@@ -81,6 +81,24 @@ fn extracts_docx_text_and_headers() {
 }
 
 #[test]
+fn docx_table_input_stops_at_the_row_cap() {
+    let rows: String = (0..10)
+        .map(|index| {
+            format!("<w:tr><w:tc><w:p><w:r><w:t>row {index}</w:t></w:r></w:p></w:tc></w:tr>")
+        })
+        .collect();
+    let document = format!(
+        "<?xml version=\"1.0\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:tbl>{rows}</w:tbl></w:body></w:document>"
+    );
+    let bytes = build_zip(&[("word/document.xml", &document)]);
+    let package = Package::new(&bytes).unwrap();
+    let parsed = parse_docx(&package, 100, 2).unwrap();
+    assert!(parsed.truncated);
+    assert_eq!(parsed.tables.len(), 1);
+    assert_eq!(parsed.tables[0].rows.len(), 2);
+}
+
+#[test]
 fn follows_presentation_order_and_maps_notes() {
     let presentation = r#"<?xml version="1.0"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"

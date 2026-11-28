@@ -848,6 +848,16 @@ impl DiffEngine {
             return Ok(equal_node(label, kind, "files are byte-identical"));
         }
 
+        // Containers keep their input buffer alive while expanding nested
+        // entries. Holding the in-flight permit across that recursion can
+        // deadlock the gate: children wait for capacity held by the parent
+        // that is waiting for the children. Release the read permit first;
+        // expanded payloads remain bounded by ResourceBudget and nested
+        // document parts by Package/entry limits.
+        if kind.retains_input_while_expanding() {
+            drop(permit);
+        }
+
         let mut node = self.compare_bytes_internal(
             label,
             &hint,
@@ -1774,6 +1784,13 @@ impl DiffEngine {
                             .unwrap_or("the key column"),
                     ));
                 }
+                if diff.input_truncated {
+                    ctx.warn(format!(
+                        "{}: input row cap reached; only the first {} rows were parsed",
+                        display_label(label),
+                        self.options.max_table_rows.saturating_mul(64).max(10_000)
+                    ));
+                }
                 if diff.truncated && !display_only {
                     ctx.warn(format!(
                         "{}: table change limit ({}) reached; some rows were not reported",
@@ -1782,7 +1799,7 @@ impl DiffEngine {
                     ));
                 }
 
-                let truncated = diff.truncated && !display_only;
+                let truncated = diff.input_truncated || (diff.truncated && !display_only);
                 let status = if diff.rows.is_empty()
                     && diff.columns_added.is_empty()
                     && diff.columns_removed.is_empty()
@@ -1825,13 +1842,15 @@ impl DiffEngine {
             .options
             .concise_limit
             .is_some_and(|limit| limit < analysis_limit);
-        match workbook::compare_workbooks(
+        match workbook::compare_workbooks_with_budget(
             left,
             right,
             format,
             workbook_limit,
             self.options.compare_formulas,
             &self.options.ignore_columns,
+            ctx.budget.clone(),
+            self.options.max_file_bytes,
         ) {
             Ok(diff) => {
                 let cells_changed: usize = diff.sheets.iter().map(|sheet| sheet.cells.len()).sum();
@@ -1843,6 +1862,12 @@ impl DiffEngine {
                         diff.sheets_moved.len()
                     ));
                 }
+                if diff.input_truncated {
+                    ctx.warn(format!(
+                        "{}: worksheet range exceeds the safe input limit; large sparse sheets were skipped",
+                        display_label(label)
+                    ));
+                }
                 if diff.truncated && !display_only {
                     ctx.warn(format!(
                         "{}: workbook change limit ({}) reached; some cells were not reported",
@@ -1850,7 +1875,7 @@ impl DiffEngine {
                         self.options.max_workbook_cells
                     ));
                 }
-                let truncated = diff.truncated && !display_only;
+                let truncated = diff.input_truncated || (diff.truncated && !display_only);
                 let hidden_changed = diff.sheets.iter().any(|sheet| {
                     sheet.left_hidden != sheet.right_hidden
                         || !sheet.merges_added.is_empty()
@@ -1880,6 +1905,9 @@ impl DiffEngine {
                 )
             }
             Err(error) => {
+                if let Some(node) = budget_error_node(label, &error, ctx) {
+                    return node;
+                }
                 ctx.warn(format!(
                     "{}: could not read workbook ({error}); falling back to binary",
                     display_label(label)
@@ -1901,20 +1929,29 @@ impl DiffEngine {
         ctx: &mut Ctx,
     ) -> DiffNode {
         if kind == FileKind::DocumentCross {
-            if let Ok(diff) = documents::compare_mixed_documents(
+            match documents::compare_mixed_documents_with_budget(
                 left_kind,
                 left,
                 right_kind,
                 right,
                 self.options.max_doc_blocks,
                 self.options.max_table_rows,
+                ctx.budget.clone(),
+                self.options.max_file_bytes,
             ) {
-                let status = document_status(&diff);
-                let truncated = diff.truncated;
-                return complete_unless(
-                    DiffNode::new(label, status, DiffBody::Document(diff)),
-                    truncated,
-                );
+                Ok(diff) => {
+                    let status = document_status(&diff);
+                    let truncated = diff.truncated;
+                    return complete_unless(
+                        DiffNode::new(label, status, DiffBody::Document(diff)),
+                        truncated,
+                    );
+                }
+                Err(error) => {
+                    if let Some(node) = budget_error_node(label, &error, ctx) {
+                        return node;
+                    }
+                }
             }
             let left_text = extract_document_text(left_kind, left);
             let right_text = extract_document_text(right_kind, right);
@@ -1957,7 +1994,14 @@ impl DiffEngine {
             let display_only = self.options.concise_limit.is_some_and(|limit| {
                 limit < self.options.max_doc_blocks || limit < self.options.max_table_rows
             });
-            match documents::compare_docx_documents(left, right, block_limit, table_limit) {
+            match documents::compare_docx_documents_with_budget(
+                left,
+                right,
+                block_limit,
+                table_limit,
+                ctx.budget.clone(),
+                self.options.max_file_bytes,
+            ) {
                 Ok(diff)
                     if !diff.blocks.is_empty()
                         || !diff.tables.is_empty()
@@ -1982,10 +2026,15 @@ impl DiffEngine {
                     "{}: DOCX has no comparable blocks; falling back to extracted text",
                     display_label(label)
                 )),
-                Err(error) => ctx.warn(format!(
-                    "{}: could not parse DOCX structure ({error}); falling back to extracted text",
-                    display_label(label)
-                )),
+                Err(error) => {
+                    if let Some(node) = budget_error_node(label, &error, ctx) {
+                        return node;
+                    }
+                    ctx.warn(format!(
+                        "{}: could not parse DOCX structure ({error}); falling back to extracted text",
+                        display_label(label)
+                    ));
+                }
             }
         }
         if kind == FileKind::Pptx {
@@ -2002,7 +2051,14 @@ impl DiffEngine {
             let display_only = self.options.concise_limit.is_some_and(|limit| {
                 limit < self.options.max_slides || limit < self.options.max_table_rows
             });
-            match documents::compare_pptx_documents(left, right, slide_limit, table_limit) {
+            match documents::compare_pptx_documents_with_budget(
+                left,
+                right,
+                slide_limit,
+                table_limit,
+                ctx.budget.clone(),
+                self.options.max_file_bytes,
+            ) {
                 Ok(diff) => {
                     if diff.truncated && !display_only {
                         ctx.warn(format!(
@@ -2022,10 +2078,15 @@ impl DiffEngine {
                         truncated,
                     );
                 }
-                Err(error) => ctx.warn(format!(
-                    "{}: could not parse PPTX structure ({error}); falling back to extracted text",
-                    display_label(label)
-                )),
+                Err(error) => {
+                    if let Some(node) = budget_error_node(label, &error, ctx) {
+                        return node;
+                    }
+                    ctx.warn(format!(
+                        "{}: could not parse PPTX structure ({error}); falling back to extracted text",
+                        display_label(label)
+                    ));
+                }
             }
         }
 
@@ -2043,12 +2104,14 @@ impl DiffEngine {
             let display_only = self.options.concise_limit.is_some_and(|limit| {
                 limit < self.options.max_doc_blocks || limit < self.options.max_table_rows
             });
-            match documents::compare_odf_documents(
+            match documents::compare_odf_documents_with_budget(
                 left,
                 right,
                 kind.label(),
                 block_limit,
                 table_limit,
+                ctx.budget.clone(),
+                self.options.max_file_bytes,
             ) {
                 Ok(diff) => {
                     if diff.truncated && !display_only {
@@ -2065,11 +2128,16 @@ impl DiffEngine {
                         truncated,
                     );
                 }
-                Err(error) => ctx.warn(format!(
-                    "{}: could not parse {} structure ({error}); falling back to extracted text",
-                    display_label(label),
-                    kind.label()
-                )),
+                Err(error) => {
+                    if let Some(node) = budget_error_node(label, &error, ctx) {
+                        return node;
+                    }
+                    ctx.warn(format!(
+                        "{}: could not parse {} structure ({error}); falling back to extracted text",
+                        display_label(label),
+                        kind.label()
+                    ));
+                }
             }
         }
 
@@ -2460,7 +2528,7 @@ impl DiffEngine {
             DiffBody::Directory(DirectoryDiff {
                 entries: comparison.entries,
                 total_entries: comparison.total_entries,
-                truncated: comparison.truncated,
+                truncated,
             }),
         );
         Ok(complete_unless(node, truncated))
@@ -2873,19 +2941,22 @@ impl DiffEngine {
         )
         .map_err(|error| DiffError::Invalid(format!("7z: {error}")))?;
         let mut entries = BTreeMap::new();
+        let mut seen_entries = 0usize;
         reader
             .for_each_entries(|entry, reader| {
                 if entry.is_directory() {
                     return Ok(true);
                 }
-                if entries.len() >= self.options.max_zip_entries {
+                if seen_entries >= self.options.max_zip_entries {
                     ctx.warn(format!(
                         "{}: archive entry limit ({}) reached; some entries were skipped",
                         display_label(label),
                         self.options.max_zip_entries
                     ));
+                    ctx.omit();
                     return Ok(false);
                 }
+                seen_entries += 1;
                 let name = entry
                     .name()
                     .replace('\\', "/")
@@ -5144,6 +5215,27 @@ fn document_status(diff: &DocumentDiff) -> DiffStatus {
     } else {
         DiffStatus::Different
     }
+}
+
+fn budget_error_node(label: &str, error: &str, ctx: &mut Ctx) -> Option<DiffNode> {
+    if !error.contains("expanded-bytes budget exhausted") {
+        return None;
+    }
+    ctx.warn(format!(
+        "{}: {error}; remaining document parts were not compared",
+        display_label(label)
+    ));
+    ctx.omit();
+    Some(
+        DiffNode::new(
+            label,
+            DiffStatus::Unsupported,
+            DiffBody::Unsupported(UnsupportedInfo {
+                note: error.to_string(),
+            }),
+        )
+        .with_completeness(ComparisonCompleteness::Truncated),
+    )
 }
 
 fn complete_unless(node: DiffNode, truncated: bool) -> DiffNode {

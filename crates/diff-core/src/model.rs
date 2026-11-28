@@ -209,6 +209,49 @@ impl FileKind {
             Self::Pdf | Self::Ofd | Self::Docx | Self::Pptx | Self::Odt | Self::Odp
         )
     }
+
+    /// Kinds whose comparison can retain the input bytes while expanding
+    /// nested entries or document parts. The in-flight permit is released
+    /// before this recursion so a parent buffer can never wait on children
+    /// that need the same gate.
+    pub fn retains_input_while_expanding(self) -> bool {
+        matches!(
+            self,
+            Self::Zip
+                | Self::SevenZip
+                | Self::Tar
+                | Self::Deb
+                | Self::Rpm
+                | Self::Iso
+                | Self::Cpio
+                | Self::Cab
+                | Self::Xar
+                | Self::Ar
+                | Self::Gzip
+                | Self::Zstd
+                | Self::Bzip2
+                | Self::Xz
+                | Self::Lz4
+                | Self::Pdf
+                | Self::Ofd
+                | Self::Docx
+                | Self::Xlsx
+                | Self::Pptx
+                | Self::DocumentCross
+                | Self::Odt
+                | Self::Odp
+                | Self::Office
+                | Self::Squashfs
+                | Self::Snap
+                | Self::AppImage
+                | Self::Flatpak
+                | Self::Dmg
+                | Self::Msix
+                | Self::Aab
+                | Self::Ext4
+                | Self::Epub
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -805,6 +848,10 @@ pub struct TableDiff {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub duplicate_keys: Vec<String>,
     pub truncated: bool,
+    /// True when the input row cap stopped parsing before EOF. This always
+    /// propagates completeness even when the display cap is active.
+    #[serde(default)]
+    pub input_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -859,6 +906,10 @@ pub struct WorkbookDiff {
     pub defined_names: Vec<FieldChange>,
     pub sheets: Vec<SheetDiff>,
     pub truncated: bool,
+    /// True when an input sheet was too large to materialise safely. This is
+    /// distinct from the display/change cap and always propagates completeness.
+    #[serde(default)]
+    pub input_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
