@@ -6,11 +6,19 @@
 - Rust 1.97.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
 
+## Release Verification (v1.1.1 - Toyger)
+
+On 2026-11-28, the `1.1.1 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 356 debug tests, 356 release tests, the optimized `dist` build and the 184-case repository smoke suite against the `dist` binary (real APK pairs compared as an extra sanity check). It adds the bounded scheduler — an in-flight gate (`--max-inflight-bytes`, default 256 MiB) that bounds the bytes of file contents held in flight by the parallel workers instead of only the thread count, with clamped solo runs for oversized tasks and chunk-by-chunk result aggregation in key order — and the parser registry: a `FormatParser` trait maps every `FileKind` to one of fourteen parsers, each owning its depth gate and reader and charging unpacked bytes through the shared context, so new formats no longer touch the dispatcher. Released on the patch line per the version policy. The 1.1.1 artifact was rebuilt after the commit identities were corrected from a runtime-injected `zwork <zwork@local>` to `Chidc <chidcout@outlook.com>`; the 1.0.4 and 1.1.0 binaries predate that rewrite.
+
+Final release artifact: `target/dist/diff-everything.exe`, 55,647,232 bytes (53.07 MiB), SHA-256 F656F4F4193A780BE321A370FA4C7BE411A1CDEF73D233286F3F058E51F684DD. The binary was built from code commit c5169105845c with the dist profile (fat LTO, one codegen unit, stripped symbols).
+
+Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md`.
+
 ## Release Verification (v1.1.0 - Toyger)
 
 On 2026-11-28, the `1.1.0 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 351 debug tests, 351 release tests, the optimized `dist` build and the 184-case repository smoke suite against the `dist` binary, with exit codes 0/1/3 verified live on a truncated-equal directory. It adds the shared expanded-bytes `ResourceBudget` (`--max-expanded-bytes`, default 1 GiB) charged atomically by every archive reader and decompressor, stops directory scans at the entry limit, propagates `ComparisonCompleteness::Truncated` from every omitted-entry limit into `DiffReport.completeness` with the new indeterminate exit code 3, and bounds file reads to remove the metadata-versus-read TOCTOU window. The v1.0.4 inline-test layout is kept. The `fetch_update` deprecation on the newest stable Rust is silenced on its single call site for MSRV compatibility.
 
-Final release artifact: `target/dist/diff-everything.exe`, 55,639,552 bytes (53.06 MiB), SHA-256 `E936DF29671BC6E913D020A2D8415D91502A5F111BC6BBE73CDD807D796D4699`. The binary was built from code commit `6631c574d35b` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
+Final release artifact: `target/dist/diff-everything.exe`, 55,639,552 bytes (53.06 MiB), SHA-256 `E936DF29671BC6E913D020A2D8415D91502A5F111BC6BBE73CDD807D796D4699`. The binary was built from code commit `750f79158149` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
 
 Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md`.
 
@@ -18,7 +26,7 @@ Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md`.
 
 On 2026-11-28, the `1.0.4 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 346 debug tests, 346 release tests, the optimized `dist` build and the 184-case repository smoke suite run against the `dist` binary (real APK, CAB and XAR pairs from `testdata/` and `fixtures/` were compared as an extra sanity check). It routes every archive reader, CAB included, through the shared per-file bounded read, validates the XAR table-of-contents size before allocating and bounds XAR payloads and ZIP LZMA compressed input, counts `--max-depth` identically for directories, archives and compressed streams, and moves every inline unit test out of `src/` into `tests/unit/`.
 
-Final release artifact: `target/dist/diff-everything.exe`, 55,621,120 bytes (53.04 MiB), SHA-256 `BBC60C8209A88A1AD7FA71231AE7ED44568887F3FFFE3B79D9D4D8D40F4B4F31`. The binary was built from code commit `080929023924` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
+Final release artifact: `target/dist/diff-everything.exe`, 55,621,120 bytes (53.04 MiB), SHA-256 `BBC60C8209A88A1AD7FA71231AE7ED44568887F3FFFE3B79D9D4D8D40F4B4F31`. The binary was built from code commit `a3331134bc42` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
 
 Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md`.
 
