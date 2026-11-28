@@ -1,6 +1,6 @@
 # DiffEverything
 
-**Current release: 1.3.0 (Toyger)**
+**Current release: 1.2.1 (Toyger)**
 
 A Rust CLI that compares heterogeneous files by normalizing them into one diff tree. It does not replace `diff`; it adds format-aware comparison and multiple report formats.
 
@@ -25,7 +25,7 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 | Video / waveform | MP4 / M4V / MKV / WebM / MOV / AVI / WMV / FLV | Container tracks, codecs, dimensions, frame counts, packet counts/bytes and per-track packet hashes; audio-track RMS waveform; full mode shows more track/packet and waveform detail |
 | Disk images / packages | SquashFS / Snap / AppImage / Flatpak / DMG / MSIX / AAB / ext4 | SquashFS/Snap/AppImage entry trees, modes and contents; ext4 inodes, modes, owners, xattrs and file data; DMG UDIF/block-map metadata; MSIX manifest/block map; AAB protobuf bundle/manifests; Flatpak ref/commit metadata and payload hash |
 | Binary / patches | Any binary / directory | Hex line diff, exact differing byte count, first difference offset, single-file bsdiff, directory ZIP patch, pure-Rust HDIFF13 encode/apply (none/zstd/zlib/bzip2/lzma2), pure-Rust HDIFF19 directory patch encode/apply (fadler64 checksums, same-file dedup, optional compression, hpatchz-compatible) |
-| Android | `.apk`, binary `AndroidManifest.xml` | Recursive ZIP plus binary XML string-pool/chunk parsing; semantic element/namespace/attribute/typed-value diff; `--detail full -y` decompiles shared `classes.dex` classes to Java, summarizes large one-sided class sets by descriptor, and disassembles embedded `.so` files; damaged manifests fall back to binary |
+| Android | `.apk`, binary `AndroidManifest.xml` | Recursive ZIP plus binary XML string-pool/chunk parsing; semantic element/namespace/attribute/typed-value diff; `--detail full` decompiles shared `classes.dex` classes to Java with the embedded decompiler (interactive approval prompt; headless APK runs auto-authorize it), summarizes large one-sided class sets by descriptor, and disassembles embedded `.so` files; damaged manifests fall back to binary |
 | Executables | ELF / PE / Mach-O / COFF | Architecture, entry point, section digest, file offset, symbols, imports; fat Mach-O slices; damaged files fall back to binary; `--detail full` adds normalized disassembly for ELF/PE/Mach-O and `.so` (y/n prompt, `-y` accepts) |
 | Other formats | Java class / JAR, WebAssembly, TTF / OTF / TTC / WOFF / WOFF2, Git index, OpenSSH public keys, ICO / CUR, IPK | Class, Wasm, font, Git index and key semantics; WOFF/WOFF2 unpacked to SFNT; damaged inputs fall back to binary |
 | Archives / images / packages | ZIP (bzip2/LZMA/zstd), 7Z, TAR, TAR.GZ/BZ2/XZ/ZST/LZ4, CPIO, CAB, XAR, AR, IPK, GZ, ZST, BZ2, XZ, LZ4, DEB, RPM, ISO | Recursive unpacking and per-entry dispatch; DEB (ar) and RPM (header + payload); ISO9660 trees; CAB (MSZIP/LZX), XAR, AR and TAR links; single-file compressed inputs are decompressed and compared |
@@ -191,7 +191,7 @@ Common examples:
 `--version` prints the codename plus build metadata; `-V` prints only the first line:
 
 ```text
-diff-everything 1.3.0 (Toyger)
+diff-everything 1.2.1 (Toyger)
 Commit:     <git-commit>
 Build:      release / <target-triple>
 Rust:       <rustc-version>
@@ -277,7 +277,7 @@ Repository: https://github.com/ChidcGithub/DiffEverything
 | `--pdf-visual` / `--pdftoppm <FILE>` / `--pdf-dpi <N>` / `--pdf-max-pages <N>` / `--pdf-output-dir <DIR>` | Rendered PDF visual diff attached to the document report/JSON, with HTML/PNG/PDF artifacts |
 | `--ocr` / `--tesseract <FILE>` / `--tessdata <DIR>` / `--ocr-language <LANG>` | Image/PDF OCR and tool configuration |
 | **Decompilation and external tools** | |
-| `-y, --yes` | Accept decompilation, large-download (>100 MiB) and packed-application prompts |
+| `-y, --yes` | Accept external decompilation, large-download (>100 MiB) and packed-application prompts; built-in DEX decompilation uses `--detail full` and prompts only when interactive |
 | `--objdump <FILE>` | Optional external llvm-objdump/objdump; embedded pure-Rust disassemblers are the default |
 | `--external-tool <PROGRAM>` / `--external-arg <ARG>` | Delegate comparison to an external program; LEFT/RIGHT are appended |
 
@@ -347,7 +347,7 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 - Example terminal layout (colors omitted):
 
 ```text
-DiffEverything 1.3.0 (Toyger)
+DiffEverything 1.2.1 (Toyger)
 ========================================================================
 left     fixtures\text\old.txt  [text | 105 B]
 right    fixtures\text\new.txt  [text | 160 B]
@@ -379,7 +379,7 @@ elapsed  7 ms
 
 ## Performance, Size and Hardening
 
-- The 1.3.0 engine avoids repeated parsing: PDF text, positioned blocks, metadata and page geometry come from one `lopdf::Document` per side; DOCX/PPTX/ODT/ODP and XLSX metadata share one open ZIP `Package` per side; left and right document/workbook parsing runs through `rayon::join`. The PDF path decodes each page content stream once and derives both the text layer and positioned blocks from it; Office/OpenDocument media hashes stream through one reused 64 KiB buffer. Measured on the benchmark corpus, a 1000-page PDF is 8.3× faster, multipart DOCX 3.8×, multipart ODT 3.7×, PPTX 2.2× and XLSX 1.33×. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+- The 1.2.1 engine avoids repeated parsing: PDF text, positioned blocks, metadata and page geometry come from one `lopdf::Document` per side; DOCX/PPTX/ODT/ODP and XLSX metadata share one open ZIP `Package` per side; left and right document/workbook parsing runs through `rayon::join`. The PDF path decodes each page content stream once and derives both the text layer and positioned blocks from it; Office/OpenDocument media hashes stream through one reused 64 KiB buffer. Measured on the benchmark corpus, a 1000-page PDF is 8.3× faster, multipart DOCX 3.8×, multipart ODT 3.7×, PPTX 2.2× and XLSX 1.33×. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 - Text comparison strips common line prefixes/suffixes before running Myers/patience, switches to patience for large changed middles, stops building hunks at the detail cap, skips word-level spans above a threshold, and avoids a full normalization copy when `--ignore-whitespace`/`--ignore-case` are off. On a 49 MB file with ten changed lines this is about 10× faster with 47% lower peak RSS, and memory is 80% lower on the 4.8 MB variant.
 - Structured comparison returns immediately for equal subtrees, trims equal array edges, and aligns large arrays on stable 128-bit content fingerprints rather than serialising every value. The 50k-record JSON benchmark is about 1.46× faster with 13% lower peak RSS.
 - Directories and archives pair unmatched entries by `(size, SHA-256)` and report `renamed_from`, so a rename is one moved entry instead of add+remove. Only unmatched entries are hashed, directory hashes hold an in-flight permit sized to the file, duplicate content is paired stably, and explicit CSV keys still win over implicit keys. Rename detection never changes `completeness` or exit codes.

@@ -1644,7 +1644,7 @@ fn resolve_decompile_options(
     // available to answer a prompt. External objdump always prompts.
     let allow = (builtin_dex && !io::stdin().is_terminal())
         || confirm_decompile(left, right, tool.as_deref(), cli.yes)?;
-    Ok(allow.then(|| diff_core::engine::DecompileOptions {
+    Ok(allow.then_some(diff_core::engine::DecompileOptions {
         objdump: tool,
         max_lines: 20_000,
     }))

@@ -6,9 +6,9 @@
 - Rust 1.100.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
 
-## Verification (1.3.0 - Toyger, unreleased)
+## Release Verification (v1.2.1 - Toyger)
 
-The 1.3.0 work implements the M0–M4 engine performance and intelligence plan:
+The 1.2.1 work implements the M0–M4 engine performance and intelligence plan:
 
 - M0: reproducible synthetic corpus and best-of-five wall-time / peak-RSS / read-byte / expanded-byte runner (`.private/bench/`), plus a counting-allocator harness; results are in [PERFORMANCE.md](PERFORMANCE.md).
 - M1: one PDF parse per side with each page content stream decoded once for text and blocks; one reusable `Package` per Office/OpenDocument side with streamed media hashing; parallel left/right document and workbook parsing; text common-prefix/suffix trimming with patience for large middles; structured equal-subtree short-circuiting; archive size pre-checks and early hunk stopping. Measured: PDF 8.30×, multipart DOCX 3.80×, multipart ODT 3.67× (targets ≥2× / ≥1.5×).
@@ -21,14 +21,18 @@ Verification performed locally:
 ```text
 cargo fmt --all                                      passed
 cargo clippy --workspace --all-targets -- -D warnings passed
-cargo test --workspace                               passed: 12 + 79 + 182 + 131 = 404 tests
+cargo test --workspace                               passed: 12 + 80 + 183 + 131 = 406 tests
 cargo build --release                                passed
 scripts/smoke-test.ps1 (release binary)              passed: 189 passed, 0 failed
 ```
 
+Built-in Java decompilation: APK/DEX inputs use the embedded DEX-to-Java decompiler under `--detail full`. Interactive terminals still show the approval prompt; headless runs authorize the embedded decompiler directly. The APK preflight scans the full central directory, so `classes.dex` entries after the first 2,000 entries (for example WeChat multidex APKs) are detected. External `--objdump` use still requires approval. Regression tests cover headless DEX decompilation and late-entry APK detection.
+
 Resource-safety review fixes verified by dedicated tests: container tasks release the in-flight permit before recursive expansion; DOCX/PPTX/ODT and XLSX reads are charged to the shared expanded-byte budget; sparse XLSX bounding boxes are rejected before Calamine allocates them; `max_workbook_cells` is shared across sheets; 7z entry-cap skips mark the archive incomplete; `DirectoryDiff.truncated` uses the merged scan flag; and CSV/DOCX table readers enforce input caps.
 
-Benchmark highlights versus the published 1.2.0 binary: 49 MB near-identical text 8.20× faster with 47% lower peak RSS and 99.99% fewer allocations; 1000-page PDF 8.30× faster; multipart DOCX 3.80×; multipart ODT 3.67×; PPTX 2.18×; XLSX 1.33×; 10k-entry ZIP 1.55× faster with 89% lower peak RSS; 10k-entry TAR 1.35× faster with 48% lower peak RSS. The 10k directory case is within noise because rename hashing trades a small amount of work for a smarter report. Full numbers, read/expanded bytes and allocation counts are in [PERFORMANCE.md](PERFORMANCE.md). No release tag or published artifact was created for 1.3.0 in this step.
+Benchmark highlights versus the published 1.2.0 binary: 49 MB near-identical text 8.20× faster with 47% lower peak RSS and 99.99% fewer allocations; 1000-page PDF 8.30× faster; multipart DOCX 3.80×; multipart ODT 3.67×; PPTX 2.18×; XLSX 1.33×; 10k-entry ZIP 1.55× faster with 89% lower peak RSS; 10k-entry TAR 1.35× faster with 48% lower peak RSS. The 10k directory case is within noise because rename hashing trades a small amount of work for a smarter report. Full numbers, read/expanded bytes and allocation counts are in [PERFORMANCE.md](PERFORMANCE.md). 
+
+Release artifact: `target/release/diff-everything.exe`, 60,179,968 bytes (57.39 MiB), SHA-256 `84E318B595864AD132101A7BE1CA311168D982FA435028097FCD4C06FBBC67FA`. Built with the release profile (thin LTO, four codegen units, stripped symbols, Rust 1.100.1) from the 1.2.1 source tree.
 
 ## Release Verification (v1.2.0 - Toyger)
 

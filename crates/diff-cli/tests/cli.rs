@@ -1721,7 +1721,7 @@ fn version_reports_codename_and_build_info() {
     assert_eq!(long.status.code(), Some(0), "{}", stderr(&long));
     let text = stdout(&long);
     for field in [
-        "1.3.0 (Toyger)",
+        "1.2.1 (Toyger)",
         "Commit:",
         "Build:",
         "Rust:",
@@ -1734,7 +1734,7 @@ fn version_reports_codename_and_build_info() {
 
     let short = run_str(&["-V"]);
     assert_eq!(short.status.code(), Some(0), "{}", stderr(&short));
-    assert_eq!(stdout(&short).trim(), "diff-everything 1.3.0 (Toyger)");
+    assert_eq!(stdout(&short).trim(), "diff-everything 1.2.1 (Toyger)");
 }
 
 #[test]
