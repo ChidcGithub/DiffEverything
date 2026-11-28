@@ -1,6 +1,6 @@
 # DiffEverything
 
-**Current release: 1.0.3 (Toyger)**
+**Current release: 1.0.4 (Toyger)**
 
 A Rust CLI that compares heterogeneous files by normalizing them into one diff tree. It does not replace `diff`; it adds format-aware comparison and multiple report formats.
 
@@ -185,7 +185,7 @@ Common examples:
 `--version` prints the codename plus build metadata; `-V` prints only the first line:
 
 ```text
-diff-everything 1.0.3 (Toyger)
+diff-everything 1.0.4 (Toyger)
 Commit:     <git-commit>
 Build:      release / <target-triple>
 Rust:       <rustc-version>
@@ -325,7 +325,7 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 - Example terminal layout (colors omitted):
 
 ```text
-DiffEverything 1.0.3 (Toyger)
+DiffEverything 1.0.4 (Toyger)
 ========================================================================
 left     fixtures\text\old.txt  [text | 105 B]
 right    fixtures\text\new.txt  [text | 160 B]
