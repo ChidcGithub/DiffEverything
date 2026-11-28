@@ -5,7 +5,7 @@ use crate::diff::{
 };
 use crate::error::{DiffError, Result};
 use crate::model::*;
-use crate::progress::ProgressHandle;
+use crate::progress::{EntryProgress, ProgressHandle};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use quick_xml::XmlVersion;
 use quick_xml::events::Event;
@@ -168,6 +168,18 @@ trait StreamEntries {
     fn contains(&self, name: &str) -> bool;
     fn size(&self, name: &str) -> Option<u64>;
     fn read(&self, name: &str, ctx: &mut Ctx) -> Result<Option<Vec<u8>>>;
+    fn read_with_progress(
+        &self,
+        name: &str,
+        ctx: &mut Ctx,
+        progress: Option<&ProgressHandle>,
+    ) -> Result<Option<Vec<u8>>> {
+        let data = self.read(name, ctx)?;
+        if let (Some(progress), Some(data)) = (progress, &data) {
+            progress.add_entry_bytes(data.len() as u64);
+        }
+        Ok(data)
+    }
     fn stamp(&self, name: &str, ctx: &mut Ctx) -> Result<Option<EntryStamp>>;
 }
 
@@ -188,6 +200,15 @@ impl StreamEntries for ZipStream<'_> {
         ZipStream::read(self, name, ctx)
     }
 
+    fn read_with_progress(
+        &self,
+        name: &str,
+        ctx: &mut Ctx,
+        progress: Option<&ProgressHandle>,
+    ) -> Result<Option<Vec<u8>>> {
+        ZipStream::read_with_progress(self, name, ctx, progress)
+    }
+
     fn stamp(&self, name: &str, ctx: &mut Ctx) -> Result<Option<EntryStamp>> {
         ZipStream::stamp(self, name, ctx)
     }
@@ -195,6 +216,15 @@ impl StreamEntries for ZipStream<'_> {
 
 impl ZipStream<'_> {
     fn read(&self, name: &str, ctx: &mut Ctx) -> Result<Option<Vec<u8>>> {
+        self.read_with_progress(name, ctx, None)
+    }
+
+    fn read_with_progress(
+        &self,
+        name: &str,
+        ctx: &mut Ctx,
+        progress: Option<&ProgressHandle>,
+    ) -> Result<Option<Vec<u8>>> {
         if self.stopped.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -226,17 +256,31 @@ impl ZipStream<'_> {
                 ctx.omit();
                 return Ok(None);
             }
-            decode_zip_lzma(&compressed, meta.size, self.max_file_bytes)
-                .map_err(|error| DiffError::Invalid(format!("zip lzma entry {name}: {error}")))?
+            let data = decode_zip_lzma(&compressed, meta.size, self.max_file_bytes)
+                .map_err(|error| DiffError::Invalid(format!("zip lzma entry {name}: {error}")))?;
+            if let Some(progress) = progress {
+                progress.add_entry_bytes(data.len() as u64);
+            }
+            data
         } else {
             let mut entry = archive
                 .by_index(meta.index)
                 .map_err(|error| DiffError::Invalid(format!("zip entry {name}: {error}")))?;
             let mut data = Vec::new();
             let mut limited = (&mut entry).take(self.max_file_bytes + 1);
-            limited
-                .read_to_end(&mut data)
-                .map_err(|error| DiffError::Invalid(format!("zip entry {name}: {error}")))?;
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let read = limited
+                    .read(&mut buffer)
+                    .map_err(|error| DiffError::Invalid(format!("zip entry {name}: {error}")))?;
+                if read == 0 {
+                    break;
+                }
+                data.extend_from_slice(&buffer[..read]);
+                if let Some(progress) = progress {
+                    progress.add_entry_bytes(read as u64);
+                }
+            }
             if data.len() as u64 > self.max_file_bytes {
                 ctx.warn(format!(
                     "{}: archive entry {name} exceeds the detailed-diff limit",
@@ -2770,8 +2814,19 @@ impl DiffEngine {
                         pending.push(key.clone());
                         continue;
                     }
-                    let left_data = left.read(key, ctx)?;
-                    let right_data = right.read(right_key, ctx)?;
+                    let entry_progress = self.progress.as_ref().and_then(|progress| {
+                        progress.try_start_entry(key, left_size.saturating_add(right_size))
+                    });
+                    let left_data = left.read_with_progress(
+                        key,
+                        ctx,
+                        entry_progress.as_ref().map(EntryProgress::handle),
+                    )?;
+                    let right_data = right.read_with_progress(
+                        right_key,
+                        ctx,
+                        entry_progress.as_ref().map(EntryProgress::handle),
+                    )?;
                     match (left_data, right_data) {
                         (Some(left_data), Some(right_data)) => {
                             if left_data == right_data {
@@ -2861,8 +2916,24 @@ impl DiffEngine {
                 let key = pending[index].clone();
                 index += 1;
                 let right_key = renames.get(&key).cloned().unwrap_or_else(|| key.clone());
-                let left_data = left.read(&key, ctx)?;
-                let right_data = right.read(&right_key, ctx)?;
+                let total_bytes = left
+                    .size(&key)
+                    .unwrap_or(0)
+                    .saturating_add(right.size(&right_key).unwrap_or(0));
+                let entry_progress = self
+                    .progress
+                    .as_ref()
+                    .and_then(|progress| progress.try_start_entry(&key, total_bytes));
+                let left_data = left.read_with_progress(
+                    &key,
+                    ctx,
+                    entry_progress.as_ref().map(EntryProgress::handle),
+                )?;
+                let right_data = right.read_with_progress(
+                    &right_key,
+                    ctx,
+                    entry_progress.as_ref().map(EntryProgress::handle),
+                )?;
                 match (left_data, right_data) {
                     (Some(left_data), Some(right_data)) => {
                         batch_bytes = batch_bytes
@@ -2899,6 +2970,14 @@ impl DiffEngine {
             }
             let process =
                 |(key, _right_key, left_data, right_data): &(String, String, Vec<u8>, Vec<u8>)| {
+                    let total = (left_data.len() + right_data.len()) as u64;
+                    let entry_progress = self
+                        .progress
+                        .as_ref()
+                        .and_then(|progress| progress.try_start_entry(key, total));
+                    if let Some(progress) = &entry_progress {
+                        progress.handle().add_entry_bytes(total);
+                    }
                     let mut local = Ctx::child(ctx.excludes.clone(), ctx.budget.clone());
                     let node = self.compare_archive_pair(
                         key,
@@ -4135,6 +4214,15 @@ impl DiffEngine {
                         .get(key)
                         .and_then(|renamed| right_entries.get(renamed))
                 });
+                let total = left_entries.get(key).map_or(0, Vec::len) as u64
+                    + right_data.map_or(0, Vec::len) as u64;
+                let entry_progress = self
+                    .progress
+                    .as_ref()
+                    .and_then(|progress| progress.try_start_entry(key, total));
+                if let Some(progress) = &entry_progress {
+                    progress.handle().add_entry_bytes(total);
+                }
                 match (left_entries.get(key), right_data) {
                     (Some(left_data), Some(right_data)) => self.compare_archive_pair(
                         key,
