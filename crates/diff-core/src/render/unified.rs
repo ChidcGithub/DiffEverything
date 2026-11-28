@@ -1,5 +1,5 @@
 use crate::model::*;
-use crate::render::display_path;
+use crate::render::{display_node_label, display_path};
 use std::fmt::Write;
 
 /// GNU-style unified output for text nodes. Non-text leaves get a short
@@ -104,7 +104,11 @@ fn render_node(node: &DiffNode, report: &DiffReport, out: &mut String) {
         DiffBody::Unsupported(info) => {
             let _ = writeln!(out, "# {}: {}", display_path(&node.label), info.note);
         }
-        DiffBody::Equal(_) => {}
+        DiffBody::Equal(_) => {
+            if node.renamed_from.is_some() {
+                let _ = writeln!(out, "Renamed: {}", display_node_label(node));
+            }
+        }
     }
     if let Some(decompiled) = &node.decompiled {
         let _ = writeln!(out, "--- {} (decompiled)", node.label);

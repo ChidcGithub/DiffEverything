@@ -1,5 +1,7 @@
 use crate::model::*;
-use crate::render::{display_path, display_title, human_size, summary_parts, truncate_chars};
+use crate::render::{
+    display_node_label, display_path, display_title, human_size, summary_parts, truncate_chars,
+};
 use std::fmt::Write;
 
 pub fn render(report: &DiffReport) -> String {
@@ -471,6 +473,8 @@ fn render_node(node: &DiffNode, level: usize, out: &mut String) {
             }
             for sheet in &diff.sheets {
                 if sheet.cells.is_empty()
+                    && sheet.rows_moved.is_empty()
+                    && sheet.columns_moved.is_empty()
                     && sheet.left_hidden == sheet.right_hidden
                     && sheet.merges_added.is_empty()
                     && sheet.merges_removed.is_empty()
@@ -501,6 +505,20 @@ fn render_node(node: &DiffNode, level: usize, out: &mut String) {
                     sheet.right_rows,
                     sheet.right_columns
                 );
+                for row in &sheet.rows_moved {
+                    let _ = writeln!(
+                        out,
+                        "- `~` row {} moved to row {}",
+                        row.left_row, row.right_row
+                    );
+                }
+                for column in &sheet.columns_moved {
+                    let _ = writeln!(
+                        out,
+                        "- `~` column {} moved to {}",
+                        column.left_column, column.right_column
+                    );
+                }
                 for merge in &sheet.merges_added {
                     let _ = writeln!(out, "- `+` merge `{merge}`");
                 }
@@ -746,10 +764,20 @@ fn render_node(node: &DiffNode, level: usize, out: &mut String) {
             );
         }
         DiffBody::Equal(info) => {
+            let marker = if node.renamed_from.is_some() {
+                "~"
+            } else {
+                "="
+            };
+            let note = if node.renamed_from.is_some() {
+                "renamed, content identical"
+            } else {
+                "equal"
+            };
             let _ = writeln!(
                 out,
-                "- `=` **{}** — equal ({})",
-                display_path(&node.label),
+                "- `{marker}` **{}** — {note} ({})",
+                display_node_label(node),
                 info.kind.label()
             );
         }

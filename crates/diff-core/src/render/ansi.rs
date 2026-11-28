@@ -302,7 +302,7 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
     } else {
         marker_for(node.status).to_string()
     };
-    let label_text = sanitize_controls(&node.label);
+    let label_text = super::display_node_label(node);
     let label = if node.label.is_empty() {
         String::new()
     } else if options.rich {
@@ -807,6 +807,8 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
             }
             for sheet in &diff.sheets {
                 if sheet.cells.is_empty()
+                    && sheet.rows_moved.is_empty()
+                    && sheet.columns_moved.is_empty()
                     && sheet.left_hidden == sheet.right_hidden
                     && sheet.merges_added.is_empty()
                     && sheet.merges_removed.is_empty()
@@ -838,6 +840,20 @@ fn render_node(node: &DiffNode, indent: usize, options: &RenderOptions, out: &mu
                     sheet.right_columns,
                     sheet.cells.len()
                 );
+                for row in &sheet.rows_moved {
+                    let _ = writeln!(
+                        out,
+                        "{pad}    ~ row {} moved to row {}",
+                        row.left_row, row.right_row
+                    );
+                }
+                for column in &sheet.columns_moved {
+                    let _ = writeln!(
+                        out,
+                        "{pad}    ~ column {} moved to {}",
+                        column.left_column, column.right_column
+                    );
+                }
                 for merge in &sheet.merges_added {
                     let _ = writeln!(out, "{pad}    + merge {merge}");
                 }
@@ -1149,6 +1165,10 @@ fn render_hunk(hunk: &TextHunk, line_pad: &str, options: &RenderOptions, out: &m
 fn render_entries(entries: &[DiffNode], indent: usize, options: &RenderOptions, out: &mut String) {
     let pad = " ".repeat(indent);
     for entry in entries {
+        if entry.renamed_from.is_some() {
+            render_node(entry, indent, options, out);
+            continue;
+        }
         match &entry.body {
             DiffBody::Equal(info) => {
                 let line = format!(

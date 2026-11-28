@@ -1,5 +1,5 @@
 use crate::model::{InlineSpan, TextDiff, TextHunk, TextLine, TextTag};
-use similar::{ChangeTag, TextDiff as SimilarDiff};
+use similar::{Algorithm, ChangeTag, TextDiff as SimilarDiff};
 
 /// Compare two decoded strings line-by-line, keeping a few lines of context
 /// around every changed region.
@@ -38,6 +38,9 @@ pub fn compare_text_options(
     ignore_whitespace: bool,
     ignore_case: bool,
 ) -> TextDiff {
+    if !ignore_whitespace && !ignore_case {
+        return compare_text(left, right, context, max_hunks);
+    }
     let normalized_left = normalize_for_compare(left, ignore_whitespace, ignore_case);
     let normalized_right = normalize_for_compare(right, ignore_whitespace, ignore_case);
     compare_text_impl(
@@ -76,10 +79,58 @@ fn compare_text_impl(
     context: usize,
     max_hunks: usize,
 ) -> TextDiff {
-    let diff = SimilarDiff::from_lines(diff_left, diff_right);
-    let changes: Vec<_> = diff.iter_all_changes().collect();
     let original_left_lines: Vec<&str> = original_left.split_inclusive('\n').collect();
     let original_right_lines: Vec<&str> = original_right.split_inclusive('\n').collect();
+
+    // Most large files differ only near the beginning or end. Strip the
+    // common line prefix/suffix before running Myers/patience, so the diff
+    // works on the small changed middle instead of the whole file. Without
+    // normalization the two inputs are the same allocation, so reuse the
+    // already split original lines instead of allocating a second copy.
+    let left_diff_owned;
+    let left_diff_lines: &[&str] = if std::ptr::eq(diff_left, original_left) {
+        &original_left_lines
+    } else {
+        left_diff_owned = diff_left.split_inclusive('\n').collect::<Vec<_>>();
+        &left_diff_owned
+    };
+    let right_diff_owned;
+    let right_diff_lines: &[&str] = if std::ptr::eq(diff_right, original_right) {
+        &original_right_lines
+    } else {
+        right_diff_owned = diff_right.split_inclusive('\n').collect::<Vec<_>>();
+        &right_diff_owned
+    };
+    let mut common_prefix = 0usize;
+    while common_prefix < left_diff_lines.len()
+        && common_prefix < right_diff_lines.len()
+        && left_diff_lines[common_prefix] == right_diff_lines[common_prefix]
+    {
+        common_prefix += 1;
+    }
+    let mut common_suffix = 0usize;
+    while common_suffix < left_diff_lines.len().saturating_sub(common_prefix)
+        && common_suffix < right_diff_lines.len().saturating_sub(common_prefix)
+        && left_diff_lines[left_diff_lines.len() - 1 - common_suffix]
+            == right_diff_lines[right_diff_lines.len() - 1 - common_suffix]
+    {
+        common_suffix += 1;
+    }
+    let middle_start = common_prefix.saturating_sub(context);
+    let left_end =
+        (left_diff_lines.len().saturating_sub(common_suffix) + context).min(left_diff_lines.len());
+    let right_end = (right_diff_lines.len().saturating_sub(common_suffix) + context)
+        .min(right_diff_lines.len());
+    let left_middle = left_diff_lines[middle_start..left_end].concat();
+    let right_middle = right_diff_lines[middle_start..right_end].concat();
+    let diff = if left_middle.len().saturating_add(right_middle.len()) > 256 * 1024 {
+        SimilarDiff::configure()
+            .algorithm(Algorithm::Patience)
+            .diff_lines(&left_middle, &right_middle)
+    } else {
+        SimilarDiff::from_lines(&left_middle, &right_middle)
+    };
+    let changes: Vec<_> = diff.iter_all_changes().collect();
 
     let added_lines = changes
         .iter()
@@ -90,66 +141,59 @@ fn compare_text_impl(
         .filter(|change| change.tag() == ChangeTag::Delete)
         .count();
 
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    let mut current: Option<(usize, usize)> = None;
-    for (index, change) in changes.iter().enumerate() {
-        if change.tag() == ChangeTag::Equal {
-            continue;
-        }
-        match current {
-            Some((start, end)) if index <= end + context * 2 + 1 => {
-                current = Some((start, index));
-            }
-            Some((start, end)) => {
-                ranges.push((start, end));
-                current = Some((index, index));
-            }
-            None => current = Some((index, index)),
-        }
-    }
-    if let Some(range) = current {
-        ranges.push(range);
-    }
-
-    let mut expanded: Vec<(usize, usize)> = ranges
-        .into_iter()
-        .map(|(start, end)| {
-            (
-                start.saturating_sub(context),
-                (end + context).min(changes.len().saturating_sub(1)),
-            )
-        })
-        .collect();
-
-    let mut merged: Vec<(usize, usize)> = Vec::new();
-    for (start, end) in expanded.drain(..) {
-        if let Some(last) = merged.last_mut()
-            && start <= last.1.saturating_add(1)
-        {
-            last.1 = last.1.max(end);
-            continue;
-        }
-        merged.push((start, end));
-    }
-
     let mut hunks: Vec<TextHunk> = Vec::new();
     let mut truncated = false;
-    for (start, end) in merged {
+    let mut index = 0usize;
+    while index < changes.len() {
+        while index < changes.len() && changes[index].tag() == ChangeTag::Equal {
+            index += 1;
+        }
+        if index >= changes.len() {
+            break;
+        }
         if hunks.len() >= max_hunks {
             truncated = true;
             break;
         }
-        let slice = &changes[start..=end];
+        let first_change = index;
+        let mut last_change = index;
+        let mut probe = index + 1;
+        while probe < changes.len() {
+            if changes[probe].tag() != ChangeTag::Equal {
+                last_change = probe;
+                probe += 1;
+                continue;
+            }
+            let run_start = probe;
+            while probe < changes.len() && changes[probe].tag() == ChangeTag::Equal {
+                probe += 1;
+            }
+            if probe >= changes.len() {
+                break;
+            }
+            // Keep nearby edits in one hunk when their context windows would
+            // overlap, matching the previous range-merging behaviour.
+            if probe - run_start <= context.saturating_mul(2) {
+                last_change = probe;
+                probe += 1;
+            } else {
+                break;
+            }
+        }
+
+        let slice_start = first_change.saturating_sub(context);
+        let slice_end = (last_change + context).min(changes.len().saturating_sub(1));
+        let slice = &changes[slice_start..=slice_end];
         let old_start = slice
             .iter()
             .find_map(|change| change.old_index())
-            .map(|index| index + 1)
-            .unwrap_or(1);
+            .map(|index| index + middle_start + 1)
+            .unwrap_or(middle_start + 1);
         let new_start = slice
             .iter()
             .find_map(|change| change.new_index())
-            .map(|index| index + 1)
-            .unwrap_or(1);
+            .map(|index| index + middle_start + 1)
+            .unwrap_or(middle_start + 1);
         let old_len = slice
             .iter()
             .filter(|change| change.old_index().is_some())
@@ -169,12 +213,12 @@ fn compare_text_impl(
                 };
                 TextLine {
                     tag,
-                    old_lineno: change.old_index().map(|index| index + 1),
-                    new_lineno: change.new_index().map(|index| index + 1),
+                    old_lineno: change.old_index().map(|index| index + middle_start + 1),
+                    new_lineno: change.new_index().map(|index| index + middle_start + 1),
                     text: original_line(
                         change.tag(),
-                        change.old_index(),
-                        change.new_index(),
+                        change.old_index().map(|index| index + middle_start),
+                        change.new_index().map(|index| index + middle_start),
                         &original_left_lines,
                         &original_right_lines,
                     ),
@@ -190,6 +234,7 @@ fn compare_text_impl(
             new_len,
             lines,
         });
+        index = last_change + 1;
     }
 
     annotate_word_changes(&mut hunks);
@@ -230,6 +275,9 @@ fn original_line(
 }
 
 fn annotate_word_changes(hunks: &mut [TextHunk]) {
+    if hunks.iter().map(|hunk| hunk.lines.len()).sum::<usize>() > 4_000 {
+        return;
+    }
     for hunk in hunks {
         let mut index = 0;
         while index < hunk.lines.len() {

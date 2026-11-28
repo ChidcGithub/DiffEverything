@@ -66,10 +66,11 @@ fn zip_lzma_compressed_payload_respects_the_limit() {
     // The declared uncompressed size (10) passes the limit; only the bound on
     // the compressed stream (100 > 50) can reject the entry.
     let mut ctx = Ctx::default();
-    let entries = engine
-        .read_zip_entries(&bytes, "noise.zip", &mut ctx)
+    let stream = engine
+        .open_zip_stream(&bytes, "noise.zip", &mut ctx)
         .unwrap();
-    assert!(entries.is_empty(), "{:?}", entries.keys());
+    let data = stream.read("noise.bin", &mut ctx).unwrap();
+    assert!(data.is_none());
     assert!(
         ctx.warnings
             .iter()

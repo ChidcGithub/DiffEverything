@@ -11,12 +11,13 @@ use quick_xml::XmlVersion;
 use quick_xml::events::Event;
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use zip::ZipArchive;
 
@@ -131,6 +132,133 @@ struct InflightPermit<'a> {
 impl Drop for InflightPermit<'_> {
     fn drop(&mut self) {
         self.gate.release(self.footprint);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ZipEntryMeta {
+    index: usize,
+    size: u64,
+    compressed_size: u64,
+    is_lzma: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ZipStamp {
+    hash: String,
+    size: u64,
+    kind: FileKind,
+}
+
+/// Streaming ZIP reader used by the archive comparison. The central directory
+/// is scanned once, but entry payloads are decompressed on demand and dropped
+/// immediately after use instead of keeping both sides' contents resident.
+struct ZipStream<'a> {
+    archive: Mutex<ZipArchive<std::io::Cursor<&'a [u8]>>>,
+    entries: BTreeMap<String, ZipEntryMeta>,
+    charged: Mutex<BTreeSet<String>>,
+    stamps: Mutex<BTreeMap<String, ZipStamp>>,
+    stopped: AtomicBool,
+    max_file_bytes: u64,
+    label: String,
+}
+
+impl ZipStream<'_> {
+    fn read(&self, name: &str, ctx: &mut Ctx) -> Result<Option<Vec<u8>>> {
+        if self.stopped.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let Some(meta) = self.entries.get(name).copied() else {
+            return Ok(None);
+        };
+        let mut archive = self.archive.lock().expect("zip stream poisoned");
+        let data = if meta.is_lzma {
+            if meta.compressed_size > self.max_file_bytes {
+                drop(archive);
+                ctx.warn(format!(
+                    "{}: archive entry {name} has more compressed bytes than the detailed-diff limit",
+                    display_label(&self.label)
+                ));
+                ctx.omit();
+                return Ok(None);
+            }
+            let mut raw = archive
+                .by_index_raw(meta.index)
+                .map_err(|error| DiffError::Invalid(format!("zip lzma entry #{name}: {error}")))?;
+            let mut compressed = Vec::with_capacity(reserve_for_declared(meta.compressed_size));
+            read_bounded(&mut raw, self.max_file_bytes, &mut compressed)
+                .map_err(|error| DiffError::Invalid(format!("zip lzma entry {name}: {error}")))?;
+            if compressed.len() as u64 > self.max_file_bytes {
+                ctx.warn(format!(
+                    "{}: archive entry {name} exceeds the detailed-diff limit",
+                    display_label(&self.label)
+                ));
+                ctx.omit();
+                return Ok(None);
+            }
+            decode_zip_lzma(&compressed, meta.size, self.max_file_bytes)
+                .map_err(|error| DiffError::Invalid(format!("zip lzma entry {name}: {error}")))?
+        } else {
+            let mut entry = archive
+                .by_index(meta.index)
+                .map_err(|error| DiffError::Invalid(format!("zip entry {name}: {error}")))?;
+            let mut data = Vec::new();
+            let mut limited = (&mut entry).take(self.max_file_bytes + 1);
+            limited
+                .read_to_end(&mut data)
+                .map_err(|error| DiffError::Invalid(format!("zip entry {name}: {error}")))?;
+            if data.len() as u64 > self.max_file_bytes {
+                ctx.warn(format!(
+                    "{}: archive entry {name} exceeds the detailed-diff limit",
+                    display_label(&self.label)
+                ));
+                ctx.omit();
+                return Ok(None);
+            }
+            data
+        };
+        drop(archive);
+
+        let already_charged = {
+            let charged = self.charged.lock().expect("zip charge set poisoned");
+            charged.contains(name)
+        };
+        if !already_charged {
+            if !ctx.charge_expanded(&self.label, data.len()) {
+                self.stopped.store(true, Ordering::Relaxed);
+                return Ok(None);
+            }
+            self.charged
+                .lock()
+                .expect("zip charge set poisoned")
+                .insert(name.to_string());
+        }
+        Ok(Some(data))
+    }
+
+    fn stamp(&self, name: &str, ctx: &mut Ctx) -> Result<Option<ZipStamp>> {
+        if let Some(stamp) = self
+            .stamps
+            .lock()
+            .expect("zip stamp map poisoned")
+            .get(name)
+            .cloned()
+        {
+            return Ok(Some(stamp));
+        }
+        let Some(data) = self.read(name, ctx)? else {
+            return Ok(None);
+        };
+        let stamp = ZipStamp {
+            hash: hex_bytes(&Sha256::digest(&data)),
+            size: data.len() as u64,
+            kind: detect_bytes(name, &data),
+        };
+        self.stamps
+            .lock()
+            .expect("zip stamp map poisoned")
+            .insert(name.to_string(), stamp.clone());
+        Ok(Some(stamp))
     }
 }
 
@@ -1471,6 +1599,12 @@ impl DiffEngine {
                 ctx.summary.table_rows_removed += rows_removed;
                 ctx.summary.table_rows_changed += rows_changed;
                 ctx.summary.table_cells_changed += cells_changed;
+                if let Some(key) = &diff.implicit_key {
+                    ctx.warn(format!(
+                        "{}: inferred unique column {key:?} for row alignment; pass --key to override",
+                        display_label(label)
+                    ));
+                }
                 if !diff.duplicate_keys.is_empty() {
                     let shown = diff
                         .duplicate_keys
@@ -2076,7 +2210,21 @@ impl DiffEngine {
             .cloned()
             .collect();
 
+        let left_only: Vec<String> = left_files
+            .keys()
+            .filter(|key| !right_files.contains_key(*key))
+            .cloned()
+            .collect();
+        let right_only: Vec<String> = right_files
+            .keys()
+            .filter(|key| !left_files.contains_key(*key))
+            .cloned()
+            .collect();
+        let renames =
+            detect_directory_renames(&self.gate, &left_only, &right_only, left_files, right_files);
+        let renamed_right: BTreeSet<String> = renames.values().cloned().collect();
         let mut keys = merged_keys(left_files, right_files);
+        keys.retain(|key| !renamed_right.contains(key));
         keys.extend(unscanned.iter().cloned());
         keys.sort();
         keys.dedup();
@@ -2091,9 +2239,26 @@ impl DiffEngine {
                     local.summary.files_compared += 1;
                     return Ok(depth_limit_node(key, "directory depth limit reached"));
                 }
-                match (left_files.get(key), right_files.get(key)) {
+                let right_path = right_files.get(key).or_else(|| {
+                    renames
+                        .get(key)
+                        .and_then(|renamed| right_files.get(renamed))
+                });
+                match (left_files.get(key), right_path) {
                     (Some(left_path), Some(right_path)) => {
-                        self.compare_paths(left_path, right_path, key, depth + 1, local)
+                        let mut node =
+                            self.compare_paths(left_path, right_path, key, depth + 1, local)?;
+                        let was_equal = node.status == DiffStatus::Equal;
+                        if let Some(renamed) = renames.get(key) {
+                            node.label = renamed.clone();
+                            node.renamed_from = Some(key.clone());
+                            node.status = DiffStatus::Different;
+                        }
+                        if was_equal && node.status != DiffStatus::Equal {
+                            local.summary.files_equal = local.summary.files_equal.saturating_sub(1);
+                            local.summary.files_changed += 1;
+                        }
+                        Ok(node)
                     }
                     (Some(left_path), None) => {
                         let kind = detect_file(left_path);
@@ -2157,9 +2322,375 @@ impl DiffEngine {
         depth: usize,
         ctx: &mut Ctx,
     ) -> Result<DiffNode> {
-        let left_entries = self.read_zip_entries(left, label, ctx)?;
-        let right_entries = self.read_zip_entries(right, label, ctx)?;
-        self.compare_archive_entries(label, &left_entries, &right_entries, "zip", depth, ctx)
+        let left_stream = self.open_zip_stream(left, label, ctx)?;
+        let right_stream = self.open_zip_stream(right, label, ctx)?;
+        self.compare_zip_streams(label, &left_stream, &right_stream, depth, ctx)
+    }
+
+    fn open_zip_stream<'a>(
+        &self,
+        bytes: &'a [u8],
+        label: &str,
+        ctx: &mut Ctx,
+    ) -> Result<ZipStream<'a>> {
+        let mut archive = ZipArchive::new(std::io::Cursor::new(bytes))?;
+        let total = archive.len();
+        let limit = self.options.max_zip_entries;
+        let mut entries = BTreeMap::new();
+        if total > limit {
+            ctx.omit();
+        }
+        for index in 0..total.min(limit) {
+            let (name, size, compressed_size, is_lzma, is_dir) = {
+                let raw = archive
+                    .by_index_raw(index)
+                    .map_err(|error| DiffError::Invalid(format!("zip entry #{index}: {error}")))?;
+                (
+                    raw.name().replace('\\', "/"),
+                    raw.size(),
+                    raw.compressed_size(),
+                    matches!(raw.compression(), zip::CompressionMethod::Lzma),
+                    raw.is_dir(),
+                )
+            };
+            if is_dir {
+                continue;
+            }
+            if size > self.options.max_file_bytes {
+                ctx.warn(format!(
+                    "{}: archive entry {name} is larger than the detailed-diff limit",
+                    display_label(label)
+                ));
+                ctx.omit();
+                continue;
+            }
+            let meta = ZipEntryMeta {
+                index,
+                size,
+                compressed_size,
+                is_lzma,
+            };
+            if entries.insert(name.clone(), meta).is_some() {
+                ctx.warn(format!(
+                    "{}: duplicate archive entry name {name}; keeping the last one",
+                    display_label(label)
+                ));
+            }
+        }
+        if total > limit {
+            ctx.warn(format!(
+                "{}: archive has {total} entries; only the first {limit} were read",
+                display_label(label)
+            ));
+        }
+        Ok(ZipStream {
+            archive: Mutex::new(archive),
+            entries,
+            charged: Mutex::new(BTreeSet::new()),
+            stamps: Mutex::new(BTreeMap::new()),
+            stopped: AtomicBool::new(false),
+            max_file_bytes: self.options.max_file_bytes,
+            label: label.to_string(),
+        })
+    }
+
+    fn detect_zip_renames(
+        &self,
+        left: &ZipStream<'_>,
+        right: &ZipStream<'_>,
+        left_only: &[String],
+        right_only: &[String],
+        ctx: &mut Ctx,
+    ) -> Result<BTreeMap<String, String>> {
+        if left_only.is_empty() || right_only.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let mut right_by_size: BTreeMap<u64, Vec<&String>> = BTreeMap::new();
+        for key in right_only {
+            if let Some(meta) = right.entries.get(key) {
+                right_by_size.entry(meta.size).or_default().push(key);
+            }
+        }
+        let mut buckets: BTreeMap<u64, BTreeMap<String, VecDeque<String>>> = BTreeMap::new();
+        let mut loaded = BTreeSet::new();
+        let mut pairs = BTreeMap::new();
+        for left_key in left_only {
+            let Some(left_meta) = left.entries.get(left_key) else {
+                continue;
+            };
+            let Some(_) = right_by_size.get(&left_meta.size) else {
+                continue;
+            };
+            let Some(left_stamp) = left.stamp(left_key, ctx)? else {
+                continue;
+            };
+            if !loaded.contains(&left_stamp.size) {
+                let mut by_hash: BTreeMap<String, VecDeque<String>> = BTreeMap::new();
+                if let Some(candidates) = right_by_size.get(&left_stamp.size) {
+                    for candidate in candidates {
+                        let Some(stamp) = right.stamp(candidate, ctx)? else {
+                            continue;
+                        };
+                        if stamp.size == left_stamp.size {
+                            by_hash
+                                .entry(stamp.hash)
+                                .or_default()
+                                .push_back((*candidate).clone());
+                        }
+                    }
+                }
+                buckets.insert(left_stamp.size, by_hash);
+                loaded.insert(left_stamp.size);
+            }
+            if let Some(queue) = buckets
+                .get_mut(&left_stamp.size)
+                .and_then(|by_hash| by_hash.get_mut(&left_stamp.hash))
+                && let Some(candidate) = queue.pop_front()
+            {
+                pairs.insert(left_key.clone(), candidate);
+            }
+        }
+        Ok(pairs)
+    }
+
+    fn compare_zip_streams(
+        &self,
+        label: &str,
+        left: &ZipStream<'_>,
+        right: &ZipStream<'_>,
+        depth: usize,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode> {
+        let left_only: Vec<String> = left
+            .entries
+            .keys()
+            .filter(|key| !right.entries.contains_key(*key))
+            .cloned()
+            .collect();
+        let right_only: Vec<String> = right
+            .entries
+            .keys()
+            .filter(|key| !left.entries.contains_key(*key))
+            .cloned()
+            .collect();
+        let renames = self.detect_zip_renames(left, right, &left_only, &right_only, ctx)?;
+        let renamed_right: BTreeSet<String> = renames.values().cloned().collect();
+        let mut keys: Vec<String> = left
+            .entries
+            .keys()
+            .chain(right.entries.keys())
+            .filter(|key| !renamed_right.contains(*key))
+            .cloned()
+            .collect();
+        keys.sort();
+        keys.dedup();
+        let total_entries = keys.len();
+        let limit = self.options.max_zip_entries;
+        let count_truncated = total_entries > limit;
+        if count_truncated {
+            ctx.warn(format!(
+                "{}: archive entry limit ({limit}) reached; some entries were skipped",
+                display_label(label)
+            ));
+            keys.truncate(limit);
+        }
+        let truncated = count_truncated;
+        if let Some(progress) = &self.progress
+            && progress.enabled()
+        {
+            progress.add_total(keys.len());
+            progress.set_message(&format!("Comparing {}", display_label(label)));
+        }
+        let display = display_label(label).to_string();
+
+        let mut nodes: BTreeMap<String, DiffNode> = BTreeMap::new();
+        let mut pending: Vec<String> = Vec::new();
+        for key in &keys {
+            let right_key = renames.get(key).map(String::as_str).unwrap_or(key.as_str());
+            let left_meta = left.entries.get(key);
+            let right_meta = right.entries.get(right_key);
+            match (left_meta, right_meta) {
+                (Some(left_meta), Some(right_meta)) => {
+                    // The central directory already tells us the unpacked
+                    // sizes. Different sizes cannot be equal, so skip the
+                    // first read and materialise them only for the detailed
+                    // comparison below.
+                    if left_meta.size != right_meta.size {
+                        pending.push(key.clone());
+                        continue;
+                    }
+                    let left_data = left.read(key, ctx)?;
+                    let right_data = right.read(right_key, ctx)?;
+                    match (left_data, right_data) {
+                        (Some(left_data), Some(right_data)) => {
+                            if left_data == right_data {
+                                let node = self.compare_archive_pair(
+                                    key,
+                                    &left_data,
+                                    &right_data,
+                                    renames.get(key).map(String::as_str),
+                                    depth,
+                                    ctx,
+                                )?;
+                                nodes.insert(key.clone(), node);
+                            } else {
+                                pending.push(key.clone());
+                            }
+                        }
+                        (Some(left_data), None) => {
+                            let node = self.one_sided_archive_node(
+                                key,
+                                PresenceSide::LeftOnly,
+                                &left_data,
+                                ctx,
+                            );
+                            nodes.insert(key.clone(), node);
+                        }
+                        (None, Some(right_data)) => {
+                            let node = self.one_sided_archive_node(
+                                key,
+                                PresenceSide::RightOnly,
+                                &right_data,
+                                ctx,
+                            );
+                            nodes.insert(key.clone(), node);
+                        }
+                        (None, None) => {}
+                    }
+                }
+                (Some(_), None) => {
+                    if let Some(stamp) = left.stamp(key, ctx)? {
+                        nodes.insert(
+                            key.clone(),
+                            self.one_sided_archive_stamp(
+                                key,
+                                PresenceSide::LeftOnly,
+                                stamp.kind,
+                                stamp.size,
+                                ctx,
+                            ),
+                        );
+                    }
+                }
+                (None, Some(_)) => {
+                    if let Some(stamp) = right.stamp(right_key, ctx)? {
+                        nodes.insert(
+                            key.clone(),
+                            self.one_sided_archive_stamp(
+                                key,
+                                PresenceSide::RightOnly,
+                                stamp.kind,
+                                stamp.size,
+                                ctx,
+                            ),
+                        );
+                    }
+                }
+                (None, None) => {}
+            }
+            if let Some(progress) = &self.progress
+                && progress.enabled()
+                && nodes.contains_key(key)
+            {
+                progress.inc(&format!("{display}: {key}"));
+            }
+        }
+
+        // Re-read changed pairs in bounded batches, then run the detailed
+        // comparison in parallel. Payloads leave memory as soon as the batch
+        // finishes, so peak usage follows the batch budget instead of the
+        // archive size.
+        const BATCH_BYTES: u64 = 32 * 1024 * 1024;
+        let batch_limit = self.options.jobs.max(1).saturating_mul(2).max(2);
+        let mut index = 0usize;
+        while index < pending.len() {
+            let mut batch: Vec<(String, String, Vec<u8>, Vec<u8>)> = Vec::new();
+            let mut batch_bytes = 0u64;
+            while index < pending.len() && batch.len() < batch_limit {
+                let key = pending[index].clone();
+                index += 1;
+                let right_key = renames.get(&key).cloned().unwrap_or_else(|| key.clone());
+                let left_data = left.read(&key, ctx)?;
+                let right_data = right.read(&right_key, ctx)?;
+                match (left_data, right_data) {
+                    (Some(left_data), Some(right_data)) => {
+                        batch_bytes = batch_bytes
+                            .saturating_add(left_data.len() as u64)
+                            .saturating_add(right_data.len() as u64);
+                        batch.push((key, right_key, left_data, right_data));
+                        if batch_bytes >= BATCH_BYTES {
+                            break;
+                        }
+                    }
+                    (Some(left_data), None) => {
+                        let node = self.one_sided_archive_node(
+                            &key,
+                            PresenceSide::LeftOnly,
+                            &left_data,
+                            ctx,
+                        );
+                        nodes.insert(key, node);
+                    }
+                    (None, Some(right_data)) => {
+                        let node = self.one_sided_archive_node(
+                            &key,
+                            PresenceSide::RightOnly,
+                            &right_data,
+                            ctx,
+                        );
+                        nodes.insert(key, node);
+                    }
+                    (None, None) => {}
+                }
+            }
+            if batch.is_empty() {
+                continue;
+            }
+            let process =
+                |(key, _right_key, left_data, right_data): &(String, String, Vec<u8>, Vec<u8>)| {
+                    let mut local = Ctx::child(ctx.excludes.clone(), ctx.budget.clone());
+                    let node = self.compare_archive_pair(
+                        key,
+                        left_data,
+                        right_data,
+                        renames.get(key).map(String::as_str),
+                        depth,
+                        &mut local,
+                    );
+                    (key.clone(), node, local)
+                };
+            let results: Vec<(String, Result<DiffNode>, Ctx)> = if self.options.jobs == 1 {
+                batch.iter().map(process).collect()
+            } else {
+                batch.par_iter().map(process).collect()
+            };
+            for (key, result, local) in results {
+                ctx.merge(local);
+                let node = result?;
+                if let Some(progress) = &self.progress
+                    && progress.enabled()
+                {
+                    progress.inc(&format!("{display}: {key}"));
+                }
+                nodes.insert(key, node);
+            }
+        }
+
+        let entries: Vec<DiffNode> = keys
+            .into_iter()
+            .filter_map(|key| nodes.remove(&key))
+            .collect();
+        let node = DiffNode::new(
+            label,
+            entries_status(&entries),
+            DiffBody::Archive(ArchiveDiff {
+                format: "zip".to_string(),
+                entries,
+                total_entries,
+                truncated,
+            }),
+        );
+        Ok(complete_unless(node, truncated))
     }
 
     fn compare_7z_bytes(
@@ -3059,6 +3590,85 @@ impl DiffEngine {
         self.compare_archive_entries(label, &left_entries, &right_entries, format, depth, ctx)
     }
 
+    fn compare_archive_pair(
+        &self,
+        key: &str,
+        left_data: &[u8],
+        right_data: &[u8],
+        renamed_from: Option<&str>,
+        depth: usize,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode> {
+        let left_kind = detect_bytes(key, left_data);
+        let right_kind = detect_bytes(key, right_data);
+        let mut node = self.compare_bytes_internal(
+            key,
+            key,
+            left_data,
+            right_data,
+            left_kind,
+            right_kind,
+            depth + 1,
+            ctx,
+        )?;
+        if let Some(options) = &self.options.decompile
+            && left_kind == FileKind::Executable
+            && right_kind == FileKind::Executable
+        {
+            let mut disassembly = crate::disassembly::DisassemblyOptions::new(
+                options.objdump.clone(),
+                self.options.context,
+                self.options.max_hunks,
+            );
+            disassembly.max_lines = options.max_lines;
+            match crate::disassembly::compare_bytes(left_data, right_data, &disassembly) {
+                Ok(decompiled) => node = node.with_decompiled(decompiled),
+                Err(error) => ctx.warn(format!("{key}: decompilation failed ({error})")),
+            }
+        }
+        if let Some(renamed) = renamed_from {
+            node.label = renamed.to_string();
+            node.renamed_from = Some(key.to_string());
+            node.status = DiffStatus::Different;
+        }
+        ctx.summary.files_compared += 1;
+        if node.status == DiffStatus::Equal {
+            ctx.summary.files_equal += 1;
+        } else {
+            ctx.summary.files_changed += 1;
+        }
+        Ok(node)
+    }
+
+    fn one_sided_archive_node(
+        &self,
+        key: &str,
+        side: PresenceSide,
+        data: &[u8],
+        ctx: &mut Ctx,
+    ) -> DiffNode {
+        self.one_sided_archive_stamp(key, side, detect_bytes(key, data), data.len() as u64, ctx)
+    }
+
+    fn one_sided_archive_stamp(
+        &self,
+        key: &str,
+        side: PresenceSide,
+        kind: FileKind,
+        size: u64,
+        ctx: &mut Ctx,
+    ) -> DiffNode {
+        match side {
+            PresenceSide::LeftOnly => ctx.summary.files_removed += 1,
+            PresenceSide::RightOnly => ctx.summary.files_added += 1,
+        }
+        DiffNode::new(
+            key,
+            DiffStatus::Different,
+            DiffBody::OneSided(OneSidedInfo { side, kind, size }),
+        )
+    }
+
     fn compare_archive_entries(
         &self,
         label: &str,
@@ -3068,85 +3678,64 @@ impl DiffEngine {
         depth: usize,
         ctx: &mut Ctx,
     ) -> Result<DiffNode> {
-        let keys = merged_keys(left_entries, right_entries);
+        let left_only: Vec<String> = left_entries
+            .keys()
+            .filter(|key| !right_entries.contains_key(*key))
+            .cloned()
+            .collect();
+        let right_only: Vec<String> = right_entries
+            .keys()
+            .filter(|key| !left_entries.contains_key(*key))
+            .cloned()
+            .collect();
+        let renames = detect_archive_renames(&left_only, &right_only, left_entries, right_entries);
+        let renamed_right: BTreeSet<String> = renames.values().cloned().collect();
+        let keys: Vec<String> = merged_keys(left_entries, right_entries)
+            .into_iter()
+            .filter(|key| !renamed_right.contains(key))
+            .collect();
         let comparison = self.compare_entry_sets(
             label,
             keys,
             self.options.max_zip_entries,
             "archive",
             ctx,
-            |key, local| match (left_entries.get(key), right_entries.get(key)) {
-                (Some(left_data), Some(right_data)) => {
-                    let left_kind = detect_bytes(key, left_data);
-                    let right_kind = detect_bytes(key, right_data);
-                    let mut node = self.compare_bytes_internal(
-                        key,
+            |key, local| {
+                let right_data = right_entries.get(key).or_else(|| {
+                    renames
+                        .get(key)
+                        .and_then(|renamed| right_entries.get(renamed))
+                });
+                match (left_entries.get(key), right_data) {
+                    (Some(left_data), Some(right_data)) => self.compare_archive_pair(
                         key,
                         left_data,
                         right_data,
-                        left_kind,
-                        right_kind,
-                        depth + 1,
+                        renames.get(key).map(String::as_str),
+                        depth,
                         local,
-                    )?;
-                    if let Some(options) = &self.options.decompile
-                        && left_kind == FileKind::Executable
-                        && right_kind == FileKind::Executable
-                    {
-                        let mut disassembly = crate::disassembly::DisassemblyOptions::new(
-                            options.objdump.clone(),
-                            self.options.context,
-                            self.options.max_hunks,
-                        );
-                        disassembly.max_lines = options.max_lines;
-                        match crate::disassembly::compare_bytes(left_data, right_data, &disassembly)
-                        {
-                            Ok(decompiled) => node = node.with_decompiled(decompiled),
-                            Err(error) => {
-                                local.warn(format!("{key}: decompilation failed ({error})"))
-                            }
-                        }
-                    }
-                    local.summary.files_compared += 1;
-                    if node.status == DiffStatus::Equal {
-                        local.summary.files_equal += 1;
-                    } else {
-                        local.summary.files_changed += 1;
-                    }
-                    Ok(node)
-                }
-                (Some(left_data), None) => {
-                    local.summary.files_removed += 1;
-                    Ok(DiffNode::new(
+                    ),
+                    (Some(left_data), None) => Ok(self.one_sided_archive_node(
                         key,
-                        DiffStatus::Different,
-                        DiffBody::OneSided(OneSidedInfo {
-                            side: PresenceSide::LeftOnly,
-                            kind: detect_bytes(key, left_data),
-                            size: left_data.len() as u64,
-                        }),
-                    ))
-                }
-                (None, Some(right_data)) => {
-                    local.summary.files_added += 1;
-                    Ok(DiffNode::new(
+                        PresenceSide::LeftOnly,
+                        left_data,
+                        local,
+                    )),
+                    (None, Some(right_data)) => Ok(self.one_sided_archive_node(
                         key,
-                        DiffStatus::Different,
-                        DiffBody::OneSided(OneSidedInfo {
-                            side: PresenceSide::RightOnly,
-                            kind: detect_bytes(key, right_data),
-                            size: right_data.len() as u64,
+                        PresenceSide::RightOnly,
+                        right_data,
+                        local,
+                    )),
+                    (None, None) => Ok(DiffNode::new(
+                        key,
+                        DiffStatus::Equal,
+                        DiffBody::Equal(EqualInfo {
+                            kind: FileKind::Unknown,
+                            note: "missing on both sides".to_string(),
                         }),
-                    ))
+                    )),
                 }
-                (None, None) => Ok(DiffNode::new(
-                    key,
-                    DiffStatus::Equal,
-                    DiffBody::Equal(EqualInfo {
-                        kind: FileKind::Unknown,
-                        note: "missing on both sides".to_string(),
-                    }),
-                )),
             },
         )?;
 
@@ -3224,117 +3813,6 @@ impl DiffEngine {
             return None;
         }
         Some(data)
-    }
-
-    fn read_zip_entries(
-        &self,
-        bytes: &[u8],
-        label: &str,
-        ctx: &mut Ctx,
-    ) -> Result<BTreeMap<String, Vec<u8>>> {
-        let mut archive = ZipArchive::new(std::io::Cursor::new(bytes))?;
-        let total = archive.len();
-        let mut entries = BTreeMap::new();
-        if total > self.options.max_zip_entries {
-            // The loop below never visits the tail entries; account for them so
-            // the archive node is marked incomplete.
-            ctx.omit();
-        }
-
-        for index in 0..total.min(self.options.max_zip_entries) {
-            let (name, size, compressed_size, is_lzma) = {
-                let raw = archive
-                    .by_index_raw(index)
-                    .map_err(|error| DiffError::Invalid(format!("zip entry #{index}: {error}")))?;
-                if raw.is_dir() {
-                    continue;
-                }
-                (
-                    raw.name().replace('\\', "/"),
-                    raw.size(),
-                    raw.compressed_size(),
-                    matches!(raw.compression(), zip::CompressionMethod::Lzma),
-                )
-            };
-            if size > self.options.max_file_bytes {
-                ctx.warn(format!(
-                    "{}: archive entry {name} is larger than the detailed-diff limit",
-                    display_label(label)
-                ));
-                ctx.omit();
-                continue;
-            }
-
-            let data = if is_lzma {
-                if compressed_size > self.options.max_file_bytes {
-                    ctx.warn(format!(
-                        "{}: archive entry {name} has more compressed bytes than the detailed-diff limit",
-                        display_label(label)
-                    ));
-                    ctx.omit();
-                    continue;
-                }
-                let mut raw = archive.by_index_raw(index).map_err(|error| {
-                    DiffError::Invalid(format!("zip lzma entry #{index}: {error}"))
-                })?;
-                // The compressed payload is read through the same bound as the
-                // decompressed output; the central-directory size above is only
-                // a hint and is re-checked against what was actually read.
-                let mut compressed = Vec::with_capacity(reserve_for_declared(compressed_size));
-                read_bounded(&mut raw, self.options.max_file_bytes, &mut compressed).map_err(
-                    |error| DiffError::Invalid(format!("zip lzma entry {name}: {error}")),
-                )?;
-                if compressed.len() as u64 > self.options.max_file_bytes {
-                    ctx.warn(format!(
-                        "{}: archive entry {name} exceeds the detailed-diff limit",
-                        display_label(label)
-                    ));
-                    ctx.omit();
-                    continue;
-                }
-                decode_zip_lzma(&compressed, size, self.options.max_file_bytes).map_err(
-                    |error| DiffError::Invalid(format!("zip lzma entry {name}: {error}")),
-                )?
-            } else {
-                let mut entry = archive
-                    .by_index(index)
-                    .map_err(|error| DiffError::Invalid(format!("zip entry #{index}: {error}")))?;
-                let mut data = Vec::new();
-                let mut limited = (&mut entry).take(self.options.max_file_bytes + 1);
-                limited
-                    .read_to_end(&mut data)
-                    .map_err(|error| DiffError::Invalid(format!("zip entry {name}: {error}")))?;
-                if data.len() as u64 > self.options.max_file_bytes {
-                    ctx.warn(format!(
-                        "{}: archive entry {name} exceeds the detailed-diff limit",
-                        display_label(label)
-                    ));
-                    ctx.omit();
-                    continue;
-                }
-                data
-            };
-
-            if !ctx.charge_expanded(label, data.len()) {
-                break;
-            }
-            if entries.insert(name.clone(), data).is_some() {
-                ctx.warn(format!(
-                    "{}: duplicate archive entry name {name}; keeping the last one",
-                    display_label(label)
-                ));
-            }
-        }
-
-        if total > self.options.max_zip_entries {
-            ctx.warn(format!(
-                "{}: archive has {total} entries; only the first {} were read",
-                display_label(label),
-                self.options.max_zip_entries
-            ));
-        }
-
-        Ok(entries)
     }
 
     fn read_tar_entries(
@@ -4440,6 +4918,114 @@ fn cpio_field(header: &[u8], start: usize) -> Result<usize> {
         .map_err(|_| DiffError::Invalid("cpio: invalid header field".into()))?;
     usize::from_str_radix(text, 16)
         .map_err(|_| DiffError::Invalid("cpio: invalid header field".into()))
+}
+
+fn hash_file_with_gate(gate: &InflightGate, path: &Path) -> Option<String> {
+    let size = fs::metadata(path).ok()?.len();
+    let _permit = gate.acquire(size);
+    file_sha256(path)
+}
+
+fn file_sha256(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Some(hex_bytes(&hasher.finalize()))
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn detect_directory_renames(
+    gate: &InflightGate,
+    left_only: &[String],
+    right_only: &[String],
+    left_files: &BTreeMap<String, PathBuf>,
+    right_files: &BTreeMap<String, PathBuf>,
+) -> BTreeMap<String, String> {
+    if left_only.is_empty() || right_only.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut right_by_size: BTreeMap<u64, Vec<&String>> = BTreeMap::new();
+    for key in right_only {
+        if let Ok(metadata) = fs::metadata(&right_files[key]) {
+            right_by_size.entry(metadata.len()).or_default().push(key);
+        }
+    }
+    let mut right_hashes: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut used_right = BTreeSet::new();
+    let mut pairs = BTreeMap::new();
+    for left_key in left_only {
+        let left_path = &left_files[left_key];
+        let Ok(size) = fs::metadata(left_path).map(|metadata| metadata.len()) else {
+            continue;
+        };
+        let Some(candidates) = right_by_size.get(&size) else {
+            continue;
+        };
+        let Some(left_hash) = hash_file_with_gate(gate, left_path) else {
+            continue;
+        };
+        for candidate in candidates {
+            if used_right.contains(*candidate) {
+                continue;
+            }
+            let hash = right_hashes
+                .entry((*candidate).clone())
+                .or_insert_with(|| hash_file_with_gate(gate, &right_files[*candidate]));
+            if hash.as_deref() == Some(left_hash.as_str()) {
+                used_right.insert((*candidate).clone());
+                pairs.insert(left_key.clone(), (*candidate).clone());
+                break;
+            }
+        }
+    }
+    pairs
+}
+
+fn detect_archive_renames(
+    left_only: &[String],
+    right_only: &[String],
+    left_entries: &BTreeMap<String, Vec<u8>>,
+    right_entries: &BTreeMap<String, Vec<u8>>,
+) -> BTreeMap<String, String> {
+    if left_only.is_empty() || right_only.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut pairs = BTreeMap::new();
+    let mut used_right = BTreeSet::new();
+    for left_key in left_only {
+        let left_data = &left_entries[left_key];
+        let left_hash = hex_bytes(&Sha256::digest(left_data));
+        for candidate in right_only {
+            if used_right.contains(candidate) {
+                continue;
+            }
+            let right_data = &right_entries[candidate];
+            if right_data.len() == left_data.len()
+                && hex_bytes(&Sha256::digest(right_data)) == left_hash
+            {
+                used_right.insert(candidate.clone());
+                pairs.insert(left_key.clone(), candidate.clone());
+                break;
+            }
+        }
+    }
+    pairs
 }
 
 fn effective_kind(left: FileKind, right: FileKind) -> FileKind {

@@ -407,6 +407,9 @@ pub struct DiffNode {
     pub completeness: ComparisonCompleteness,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decompiled: Option<DecompilationDiff>,
+    /// New path's previous path when content was detected as renamed/moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed_from: Option<String>,
 }
 
 impl DiffNode {
@@ -417,7 +420,13 @@ impl DiffNode {
             body,
             completeness: ComparisonCompleteness::Complete,
             decompiled: None,
+            renamed_from: None,
         }
+    }
+
+    pub fn with_renamed_from(mut self, previous: impl Into<String>) -> Self {
+        self.renamed_from = Some(previous.into());
+        self
     }
 
     pub fn with_decompiled(mut self, decompiled: DecompilationDiff) -> Self {
@@ -786,6 +795,10 @@ pub struct TableDiff {
     pub columns_removed: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub columns_moved: Vec<ColumnMove>,
+    /// Column automatically used for row alignment because it was unique on
+    /// both sides. Explicit `--key` never sets this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implicit_key: Option<String>,
     pub rows: Vec<TableRowChange>,
     /// Keys that occur more than once on at least one side. The occurrences
     /// are compared independently instead of overwriting each other.
@@ -864,12 +877,32 @@ pub struct SheetMove {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct SheetRowMove {
+    /// 1-based row number on the left side.
+    pub left_row: u32,
+    /// 1-based row number on the right side.
+    pub right_row: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetColumnMove {
+    /// Spreadsheet column name on the left side, for example `A`.
+    pub left_column: String,
+    /// Spreadsheet column name on the right side, for example `C`.
+    pub right_column: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SheetDiff {
     pub name: String,
     pub left_rows: u32,
     pub left_columns: u32,
     pub right_rows: u32,
     pub right_columns: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows_moved: Vec<SheetRowMove>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns_moved: Vec<SheetColumnMove>,
     #[serde(default)]
     pub left_hidden: bool,
     #[serde(default)]

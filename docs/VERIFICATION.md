@@ -6,6 +6,28 @@
 - Rust 1.100.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
 
+## Verification (1.3.0 - Toyger, unreleased)
+
+The 1.3.0 work implements the M0–M4 engine performance and intelligence plan:
+
+- M0: reproducible synthetic corpus and best-of-three wall-time / peak-RSS runner (`.private/bench/`) with results in [PERFORMANCE.md](PERFORMANCE.md).
+- M1: one PDF parse per side, one reusable `Package` per Office/OpenDocument side, parallel left/right document and workbook parsing, text common-prefix/suffix trimming with patience for large middles, structured equal-subtree short-circuiting, archive size pre-checks and early hunk stopping.
+- M2: unmatched directory and archive entries are paired by `(size, SHA-256)` and reported as `renamed_from`; JSON, ANSI, HTML, Markdown, unified and `--name-only` render the previous path; completeness and exit codes are unchanged.
+- M3: text patience/unique-anchor mode, word-highlight threshold, structured array edge trimming and stable 128-bit fingerprints, CSV/TSV implicit unique key with warning, worksheet moved row/column detection with formula-normalised signatures.
+- M4: ZIP comparison scans the central directory once, reads entries on demand, and materialises changed pairs in bounded 32 MiB batches instead of holding both sides' full maps.
+
+Verification performed locally:
+
+```text
+cargo fmt --all                                      passed
+cargo clippy --workspace --all-targets -- -D warnings passed
+cargo test --workspace                               passed: 12 + 79 + 177 + 123 = 391 tests
+cargo build --release                                passed
+scripts/smoke-test.ps1 (release binary)              passed: 189 passed, 0 failed
+```
+
+Benchmark highlights versus the published 1.2.0 binary: 49 MB near-identical text 10.05× faster with 47% lower peak RSS, 1000-page PDF 1.85× faster, PPTX 2.09× faster, XLSX 1.46× faster, 10k-entry ZIP 1.19× faster with 72% lower peak RSS, 50k-record JSON 1.65× faster. DOCX is at parity and the 10k directory case is within noise; both are dominated by scan/startup costs. Full numbers and trade-offs are in [PERFORMANCE.md](PERFORMANCE.md). No release tag or published artifact was created for 1.3.0 in this step.
+
 ## Release Verification (v1.2.0 - Toyger)
 
 The 1.2.0 work adds structured document, presentation and spreadsheet comparison:

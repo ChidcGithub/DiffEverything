@@ -40,7 +40,7 @@ fn aligns_inserted_rows_before_comparing_cells() {
         formulas: vec![vec![None, None], vec![None, None], vec![None, None]],
         hidden: false,
     };
-    let (cells, truncated) = compare_sheet_cells(
+    let (cells, _rows_moved, _columns_moved, truncated) = compare_sheet_cells(
         &left,
         &right,
         false,
@@ -52,6 +52,82 @@ fn aligns_inserted_rows_before_comparing_cells() {
     assert!(cells.iter().all(|cell| cell.left.is_none()));
     assert_eq!(cells[0].column, "A1");
     assert_eq!(cells[1].column, "B1");
+}
+
+#[test]
+fn reports_moved_rows_without_cell_changes() {
+    let left = Sheet {
+        rows: 3,
+        columns: 1,
+        cells: vec![
+            vec![Some("Alpha".into())],
+            vec![Some("Beta".into())],
+            vec![Some("Gamma".into())],
+        ],
+        formulas: vec![vec![None], vec![None], vec![None]],
+        hidden: false,
+    };
+    let right = Sheet {
+        rows: 3,
+        columns: 1,
+        cells: vec![
+            vec![Some("Gamma".into())],
+            vec![Some("Alpha".into())],
+            vec![Some("Beta".into())],
+        ],
+        formulas: vec![vec![None], vec![None], vec![None]],
+        hidden: false,
+    };
+    let (cells, rows_moved, columns_moved, truncated) = compare_sheet_cells(
+        &left,
+        &right,
+        false,
+        100,
+        &std::collections::BTreeSet::new(),
+    );
+    assert!(!truncated);
+    assert!(cells.is_empty(), "{cells:?}");
+    assert!(columns_moved.is_empty());
+    assert_eq!(rows_moved.len(), 1, "{rows_moved:?}");
+    assert_eq!(rows_moved[0].left_row, 3);
+    assert_eq!(rows_moved[0].right_row, 1);
+}
+
+#[test]
+fn reports_moved_columns_without_cell_changes() {
+    let left = Sheet {
+        rows: 2,
+        columns: 3,
+        cells: vec![
+            vec![Some("A1".into()), Some("B1".into()), Some("C1".into())],
+            vec![Some("A2".into()), Some("B2".into()), Some("C2".into())],
+        ],
+        formulas: vec![vec![None, None, None], vec![None, None, None]],
+        hidden: false,
+    };
+    let right = Sheet {
+        rows: 2,
+        columns: 3,
+        cells: vec![
+            vec![Some("C1".into()), Some("A1".into()), Some("B1".into())],
+            vec![Some("C2".into()), Some("A2".into()), Some("B2".into())],
+        ],
+        formulas: vec![vec![None, None, None], vec![None, None, None]],
+        hidden: false,
+    };
+    let (cells, rows_moved, columns_moved, truncated) = compare_sheet_cells(
+        &left,
+        &right,
+        false,
+        100,
+        &std::collections::BTreeSet::new(),
+    );
+    assert!(!truncated);
+    assert!(cells.is_empty(), "{cells:?}");
+    assert!(rows_moved.is_empty());
+    assert_eq!(columns_moved.len(), 1, "{columns_moved:?}");
+    assert_eq!(columns_moved[0].left_column, "C");
+    assert_eq!(columns_moved[0].right_column, "A");
 }
 
 #[test]

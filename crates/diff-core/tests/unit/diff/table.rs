@@ -57,13 +57,22 @@ fn decodes_bom_and_keeps_duplicate_keys() {
 }
 
 #[test]
+fn infers_a_unique_column_for_row_alignment() {
+    let left = b"id,name\n1,Alice\n2,Bob\n";
+    let right = b"name,id\nBob,2\nAlice,1\n";
+    let diff = compare_tables(left, right, "csv", None, 100).unwrap();
+    assert_eq!(diff.implicit_key.as_deref(), Some("id"));
+    assert!(diff.rows.is_empty(), "{:?}", diff.rows);
+}
+
+#[test]
 fn aligns_inserted_rows_without_shifting_later_rows() {
     let left = b"id,name\n1,Alice\n2,Bob\n3,Carol\n";
     let right = b"id,name\n0,Zoe\n1,Alice\n2,Bob\n3,Carol\n";
     let diff = compare_tables(left, right, "csv", None, 100).unwrap();
     assert_eq!(diff.rows.len(), 1, "{:?}", diff.rows);
     assert_eq!(diff.rows[0].kind, RowChangeKind::Added);
-    assert_eq!(diff.rows[0].key, "row 1");
+    assert_eq!(diff.rows[0].key, "0");
 }
 
 #[test]

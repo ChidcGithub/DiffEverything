@@ -1,11 +1,10 @@
+use crate::diff::package::Package;
 use crate::model::{CellChange, FieldChange, SheetDiff, SheetMove, SheetRename, WorkbookDiff};
 use calamine::{Data, Reader, SheetVisible, open_workbook_auto_from_rs};
 use quick_xml::events::Event;
 use quick_xml::{Reader as XmlReader, XmlVersion};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read as _;
-use zip::ZipArchive;
 
 pub fn compare_workbooks(
     left: &[u8],
@@ -15,19 +14,25 @@ pub fn compare_workbooks(
     compare_formulas: bool,
     ignore_columns: &[String],
 ) -> std::result::Result<WorkbookDiff, String> {
-    let left_book = read_workbook(left)?;
-    let right_book = read_workbook(right)?;
+    let parse_side = |bytes: &[u8]| -> std::result::Result<_, String> {
+        let book = read_workbook(bytes)?;
+        let meta = if format == "xlsx" {
+            Package::new(bytes)
+                .ok()
+                .and_then(|package| read_xlsx_metadata(&package).ok())
+        } else {
+            None
+        };
+        Ok((book, meta))
+    };
+    let (left_side, right_side) = rayon::join(|| parse_side(left), || parse_side(right));
+    let (left_book, left_meta) = left_side?;
+    let (right_book, right_meta) = right_side?;
     let ignored_columns: BTreeSet<String> = ignore_columns
         .iter()
         .map(|column| column.trim().to_ascii_uppercase())
         .filter(|column| !column.is_empty())
         .collect();
-    let left_meta = (format == "xlsx")
-        .then(|| read_xlsx_metadata(left).ok())
-        .flatten();
-    let right_meta = (format == "xlsx")
-        .then(|| read_xlsx_metadata(right).ok())
-        .flatten();
     let defined_names = compare_defined_names(left_meta.as_ref(), right_meta.as_ref());
 
     let left_names = left_book.names();
@@ -81,7 +86,7 @@ pub fn compare_workbooks(
     for name in &common_left {
         let left_sheet = left_book.sheet(name).expect("common sheet exists");
         let right_sheet = right_book.sheet(name).expect("common sheet exists");
-        let (cells, sheet_truncated) = compare_sheet_cells(
+        let (cells, rows_moved, columns_moved, sheet_truncated) = compare_sheet_cells(
             left_sheet,
             right_sheet,
             compare_formulas,
@@ -120,6 +125,8 @@ pub fn compare_workbooks(
             right_columns: right_sheet.columns,
             left_hidden: left_sheet.hidden,
             right_hidden: right_sheet.hidden,
+            rows_moved,
+            columns_moved,
             merges_added,
             merges_removed,
             hidden_dimensions,
@@ -209,13 +216,53 @@ fn lcs_names(left: &[String], right: &[String]) -> Vec<String> {
     kept
 }
 
+fn align_signatures(left: &[String], right: &[String]) -> (Vec<Option<usize>>, Vec<Option<usize>>) {
+    let mut table = vec![vec![0u32; right.len() + 1]; left.len() + 1];
+    for left_index in (0..left.len()).rev() {
+        for right_index in (0..right.len()).rev() {
+            table[left_index][right_index] = if left[left_index] == right[right_index] {
+                table[left_index + 1][right_index + 1] + 1
+            } else {
+                table[left_index + 1][right_index].max(table[left_index][right_index + 1])
+            };
+        }
+    }
+    let mut left_match = vec![None; left.len()];
+    let mut right_match = vec![None; right.len()];
+    let (mut left_index, mut right_index) = (0, 0);
+    while left_index < left.len() && right_index < right.len() {
+        if left[left_index] == right[right_index] {
+            left_match[left_index] = Some(right_index);
+            right_match[right_index] = Some(left_index);
+            left_index += 1;
+            right_index += 1;
+        } else if table[left_index + 1][right_index] >= table[left_index][right_index + 1] {
+            left_index += 1;
+        } else {
+            right_index += 1;
+        }
+    }
+    (left_match, right_match)
+}
+
+fn signature_has_content(signature: &str) -> bool {
+    signature
+        .chars()
+        .any(|character| character != '\u{1f}' && character != '\u{1e}')
+}
+
 fn compare_sheet_cells(
     left: &Sheet,
     right: &Sheet,
     compare_formulas: bool,
     max_cells: usize,
     ignored: &BTreeSet<String>,
-) -> (Vec<CellChange>, bool) {
+) -> (
+    Vec<CellChange>,
+    Vec<crate::model::SheetRowMove>,
+    Vec<crate::model::SheetColumnMove>,
+    bool,
+) {
     let left_signatures: Vec<String> = (0..left.rows)
         .map(|row| sheet_row_signature(left, row, compare_formulas, ignored))
         .collect();
@@ -223,36 +270,18 @@ fn compare_sheet_cells(
         .map(|row| sheet_row_signature(right, row, compare_formulas, ignored))
         .collect();
     if left_signatures.len().saturating_mul(right_signatures.len()) > 4_000_000 {
-        return compare_sheet_cells_positionally(left, right, compare_formulas, max_cells, ignored);
+        let (cells, truncated) =
+            compare_sheet_cells_positionally(left, right, compare_formulas, max_cells, ignored);
+        return (cells, Vec::new(), Vec::new(), truncated);
     }
-    let mut table = vec![vec![0u32; right_signatures.len() + 1]; left_signatures.len() + 1];
-    for left_row in (0..left_signatures.len()).rev() {
-        for right_row in (0..right_signatures.len()).rev() {
-            table[left_row][right_row] = if left_signatures[left_row] == right_signatures[right_row]
-            {
-                table[left_row + 1][right_row + 1] + 1
-            } else {
-                table[left_row + 1][right_row].max(table[left_row][right_row + 1])
-            };
-        }
-    }
-    let mut left_match = vec![None; left_signatures.len()];
-    let mut right_match = vec![None; right_signatures.len()];
-    let (mut left_row, mut right_row) = (0, 0);
-    while left_row < left_signatures.len() && right_row < right_signatures.len() {
-        if left_signatures[left_row] == right_signatures[right_row] {
-            left_match[left_row] = Some(right_row);
-            right_match[right_row] = Some(left_row);
-            left_row += 1;
-            right_row += 1;
-        } else if table[left_row + 1][right_row] >= table[left_row][right_row + 1] {
-            left_row += 1;
-        } else {
-            right_row += 1;
-        }
-    }
+    let (mut left_match, mut right_match) = align_signatures(&left_signatures, &right_signatures);
+
+    // Rows whose content is unchanged but whose position changed are moves,
+    // not a long run of changed cells. Match them before pairing the remaining
+    // edited rows positionally.
+    let mut rows_moved = Vec::new();
     for candidate in 0..left_signatures.len() {
-        if left_match[candidate].is_some() {
+        if left_match[candidate].is_some() || !signature_has_content(&left_signatures[candidate]) {
             continue;
         }
         if let Some(target) = (0..right_signatures.len()).find(|target| {
@@ -261,6 +290,12 @@ fn compare_sheet_cells(
         }) {
             left_match[candidate] = Some(target);
             right_match[target] = Some(candidate);
+            if candidate != target {
+                rows_moved.push(crate::model::SheetRowMove {
+                    left_row: candidate as u32 + 1,
+                    right_row: target as u32 + 1,
+                });
+            }
         }
     }
     let unmatched_left: Vec<usize> = (0..left_signatures.len())
@@ -274,29 +309,51 @@ fn compare_sheet_cells(
         right_match[*right_row] = Some(*left_row);
     }
 
+    // Column alignment mirrors rows: keep columns in order where possible,
+    // then pair moved columns by content, and finally pair edited columns
+    // positionally. This avoids reporting every cell in a moved column.
+    let (left_column_match, right_column_match, columns_moved) =
+        align_sheet_columns(left, right, compare_formulas, ignored);
+
     let mut cells = Vec::new();
     let mut truncated = false;
-    let columns = left.columns.max(right.columns);
     for (right_row, matched) in right_match.iter().enumerate() {
         match matched {
             Some(left_row) => {
-                for column in 0..columns {
-                    if column_is_ignored(column, ignored) {
+                for right_column in 0..right.columns {
+                    if column_is_ignored(right_column, ignored) {
                         continue;
                     }
-                    push_sheet_cell(
-                        &mut cells,
-                        &mut truncated,
-                        max_cells,
-                        changed_sheet_cell(
-                            left,
-                            right,
-                            *left_row as u32,
-                            right_row as u32,
-                            column,
-                            compare_formulas,
+                    match right_column_match[right_column as usize] {
+                        Some(left_column) => push_sheet_cell(
+                            &mut cells,
+                            &mut truncated,
+                            max_cells,
+                            changed_sheet_cell_at(
+                                left,
+                                right,
+                                *left_row as u32,
+                                right_row as u32,
+                                left_column as u32,
+                                right_column,
+                                compare_formulas,
+                            ),
                         ),
-                    );
+                        None => push_sheet_cell(
+                            &mut cells,
+                            &mut truncated,
+                            max_cells,
+                            CellChange {
+                                column: cell_address(right_row as u32, right_column),
+                                left: None,
+                                right: right.value(right_row as u32, right_column),
+                                left_formula: None,
+                                right_formula: compare_formulas
+                                    .then(|| right.formula(right_row as u32, right_column))
+                                    .flatten(),
+                            },
+                        ),
+                    }
                 }
             }
             None => {
@@ -323,29 +380,119 @@ fn compare_sheet_cells(
         }
     }
     for (left_row, matched) in left_match.iter().enumerate() {
-        if matched.is_none() {
-            for column in 0..left.columns {
-                if column_is_ignored(column, ignored) {
-                    continue;
-                }
-                push_sheet_cell(
-                    &mut cells,
-                    &mut truncated,
-                    max_cells,
-                    CellChange {
-                        column: cell_address(left_row as u32, column),
-                        left: left.value(left_row as u32, column),
-                        right: None,
-                        left_formula: compare_formulas
-                            .then(|| left.formula(left_row as u32, column))
-                            .flatten(),
-                        right_formula: None,
-                    },
-                );
+        for left_column in 0..left.columns {
+            if column_is_ignored(left_column, ignored) {
+                continue;
+            }
+            let removed = match matched {
+                None => true,
+                Some(_) => left_column_match[left_column as usize].is_none(),
+            };
+            if !removed {
+                continue;
+            }
+            push_sheet_cell(
+                &mut cells,
+                &mut truncated,
+                max_cells,
+                CellChange {
+                    column: cell_address(left_row as u32, left_column),
+                    left: left.value(left_row as u32, left_column),
+                    right: None,
+                    left_formula: compare_formulas
+                        .then(|| left.formula(left_row as u32, left_column))
+                        .flatten(),
+                    right_formula: None,
+                },
+            );
+        }
+    }
+    (cells, rows_moved, columns_moved, truncated)
+}
+
+fn align_sheet_columns(
+    left: &Sheet,
+    right: &Sheet,
+    compare_formulas: bool,
+    ignored: &BTreeSet<String>,
+) -> (
+    Vec<Option<usize>>,
+    Vec<Option<usize>>,
+    Vec<crate::model::SheetColumnMove>,
+) {
+    // Very wide sheets fall back to positional columns; the LCS table is
+    // quadratic and would otherwise dominate memory.
+    if left.columns.saturating_mul(right.columns) > 4_000_000 {
+        return (
+            (0..left.columns)
+                .map(|column| (column < right.columns).then_some(column as usize))
+                .collect(),
+            (0..right.columns)
+                .map(|column| (column < left.columns).then_some(column as usize))
+                .collect(),
+            Vec::new(),
+        );
+    }
+    let left_signatures: Vec<String> = (0..left.columns)
+        .map(|column| sheet_column_signature(left, column, compare_formulas, ignored))
+        .collect();
+    let right_signatures: Vec<String> = (0..right.columns)
+        .map(|column| sheet_column_signature(right, column, compare_formulas, ignored))
+        .collect();
+    let (mut left_match, mut right_match) = align_signatures(&left_signatures, &right_signatures);
+    let mut moved = Vec::new();
+    for candidate in 0..left_signatures.len() {
+        if left_match[candidate].is_some() || !signature_has_content(&left_signatures[candidate]) {
+            continue;
+        }
+        if let Some(target) = (0..right_signatures.len()).find(|target| {
+            right_match[*target].is_none()
+                && right_signatures[*target] == left_signatures[candidate]
+        }) {
+            left_match[candidate] = Some(target);
+            right_match[target] = Some(candidate);
+            if candidate != target {
+                moved.push(crate::model::SheetColumnMove {
+                    left_column: column_name(candidate as u32),
+                    right_column: column_name(target as u32),
+                });
             }
         }
     }
-    (cells, truncated)
+    let unmatched_left: Vec<usize> = (0..left_signatures.len())
+        .filter(|index| left_match[*index].is_none())
+        .collect();
+    let unmatched_right: Vec<usize> = (0..right_signatures.len())
+        .filter(|index| right_match[*index].is_none())
+        .collect();
+    for (left_column, right_column) in unmatched_left.iter().zip(unmatched_right.iter()) {
+        left_match[*left_column] = Some(*right_column);
+        right_match[*right_column] = Some(*left_column);
+    }
+    (left_match, right_match, moved)
+}
+
+fn sheet_column_signature(
+    sheet: &Sheet,
+    column: u32,
+    compare_formulas: bool,
+    ignored: &BTreeSet<String>,
+) -> String {
+    if column_is_ignored(column, ignored) {
+        return String::new();
+    }
+    let mut value = String::new();
+    for row in 0..sheet.rows {
+        value.push_str(&sheet.value(row, column).unwrap_or_default());
+        value.push('\u{1f}');
+        if compare_formulas {
+            value.push_str(&normalize_formula(
+                &sheet.formula(row, column).unwrap_or_default(),
+            ));
+        }
+        value.push('\u{1e}');
+    }
+    value
 }
 
 fn compare_sheet_cells_positionally(
@@ -400,16 +547,37 @@ fn changed_sheet_cell(
     column: u32,
     compare_formulas: bool,
 ) -> CellChange {
-    let left_value = left.value(left_row, column);
-    let right_value = right.value(right_row, column);
+    changed_sheet_cell_at(
+        left,
+        right,
+        left_row,
+        right_row,
+        column,
+        column,
+        compare_formulas,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn changed_sheet_cell_at(
+    left: &Sheet,
+    right: &Sheet,
+    left_row: u32,
+    right_row: u32,
+    left_column: u32,
+    right_column: u32,
+    compare_formulas: bool,
+) -> CellChange {
+    let left_value = left.value(left_row, left_column);
+    let right_value = right.value(right_row, right_column);
     let left_formula = compare_formulas
-        .then(|| left.formula(left_row, column))
+        .then(|| left.formula(left_row, left_column))
         .flatten();
     let right_formula = compare_formulas
-        .then(|| right.formula(right_row, column))
+        .then(|| right.formula(right_row, right_column))
         .flatten();
     CellChange {
-        column: cell_address(right_row, column),
+        column: cell_address(right_row, right_column),
         left: left_value,
         right: right_value,
         left_formula,
@@ -447,11 +615,21 @@ fn sheet_row_signature(
         value.push_str(&sheet.value(row, column).unwrap_or_default());
         value.push('\u{1f}');
         if compare_formulas {
-            value.push_str(&sheet.formula(row, column).unwrap_or_default());
+            value.push_str(&normalize_formula(
+                &sheet.formula(row, column).unwrap_or_default(),
+            ));
         }
         value.push('\u{1e}');
     }
     value
+}
+
+fn normalize_formula(formula: &str) -> String {
+    formula
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_uppercase)
+        .collect()
 }
 
 fn column_is_ignored(column: u32, ignored: &BTreeSet<String>) -> bool {
@@ -474,12 +652,11 @@ struct XlsxMetadata {
     sheets: BTreeMap<String, SheetMeta>,
 }
 
-fn read_xlsx_metadata(bytes: &[u8]) -> std::result::Result<XlsxMetadata, String> {
-    let names = list_zip_names(bytes)?;
-    if !names.iter().any(|name| name == "xl/workbook.xml") {
+fn read_xlsx_metadata(package: &Package<'_>) -> std::result::Result<XlsxMetadata, String> {
+    if !package.contains("xl/workbook.xml") {
         return Err("xlsx: missing xl/workbook.xml".to_string());
     }
-    let workbook_xml = read_zip_text(bytes, "xl/workbook.xml")?;
+    let workbook_xml = package.read_text("xl/workbook.xml")?;
     let mut metadata = XlsxMetadata::default();
     let mut sheet_refs: Vec<(String, String)> = Vec::new();
     let mut reader = XmlReader::from_str(&workbook_xml);
@@ -526,11 +703,8 @@ fn read_xlsx_metadata(bytes: &[u8]) -> std::result::Result<XlsxMetadata, String>
     }
 
     let mut rels = BTreeMap::new();
-    if names
-        .iter()
-        .any(|name| name == "xl/_rels/workbook.xml.rels")
-    {
-        let rels_xml = read_zip_text(bytes, "xl/_rels/workbook.xml.rels")?;
+    if package.contains("xl/_rels/workbook.xml.rels") {
+        let rels_xml = package.read_text("xl/_rels/workbook.xml.rels")?;
         let mut reader = XmlReader::from_str(&rels_xml);
         reader.config_mut().trim_text(true);
         loop {
@@ -554,12 +728,12 @@ fn read_xlsx_metadata(bytes: &[u8]) -> std::result::Result<XlsxMetadata, String>
         }
     }
 
-    let dxfs = read_dxfs(bytes);
+    let dxfs = read_dxfs(package);
     for (sheet_name, relationship) in sheet_refs {
         let Some(part) = rels.get(&relationship) else {
             continue;
         };
-        let Ok(sheet_xml) = read_zip_text(bytes, part) else {
+        let Ok(sheet_xml) = package.read_text(part) else {
             continue;
         };
         let mut sheet = SheetMeta::default();
@@ -611,15 +785,15 @@ fn read_xlsx_metadata(bytes: &[u8]) -> std::result::Result<XlsxMetadata, String>
                 Err(error) => return Err(error.to_string()),
             }
         }
-        sheet.charts = read_sheet_charts(bytes, part, &sheet.drawings);
+        sheet.charts = read_sheet_charts(package, part, &sheet.drawings);
         sheet.conditional_formats = read_conditional_formats(&sheet_xml, &dxfs);
         metadata.sheets.insert(sheet_name, sheet);
     }
     Ok(metadata)
 }
 
-fn read_dxfs(bytes: &[u8]) -> Vec<String> {
-    let Ok(xml) = read_zip_text(bytes, "xl/styles.xml") else {
+fn read_dxfs(package: &Package<'_>) -> Vec<String> {
+    let Ok(xml) = package.read_text("xl/styles.xml") else {
         return Vec::new();
     };
     let mut dxfs = Vec::new();
@@ -780,7 +954,7 @@ fn conditional_rule_string(event: &quick_xml::events::BytesStart<'_>, dxfs: &[St
 }
 
 fn read_sheet_charts(
-    bytes: &[u8],
+    package: &Package<'_>,
     sheet_part: &str,
     drawings: &BTreeSet<String>,
 ) -> BTreeMap<String, String> {
@@ -794,12 +968,12 @@ fn read_sheet_charts(
         .map(|(directory, _)| directory)
         .unwrap_or("xl/worksheets");
     let rels_name = format!("{directory}/_rels/{file}.rels");
-    let rels = read_relationships(bytes, &rels_name, directory);
+    let rels = read_relationships(package, &rels_name, directory);
     for drawing_id in drawings {
         let Some(drawing_part) = rels.get(drawing_id) else {
             continue;
         };
-        let Ok(drawing_xml) = read_zip_text(bytes, drawing_part) else {
+        let Ok(drawing_xml) = package.read_text(drawing_part) else {
             continue;
         };
         let base = drawing_part
@@ -811,7 +985,7 @@ fn read_sheet_charts(
             .next()
             .unwrap_or(drawing_part.as_str());
         let drawing_rels_name = format!("{base}/_rels/{drawing_file}.rels");
-        let chart_rels = read_relationships(bytes, &drawing_rels_name, base);
+        let chart_rels = read_relationships(package, &drawing_rels_name, base);
         let mut reader = XmlReader::from_str(&drawing_xml);
         reader.config_mut().trim_text(true);
         loop {
@@ -827,7 +1001,7 @@ fn read_sheet_charts(
                         continue;
                     };
                     let chart_part = resolve_part_path(base, target);
-                    if let Ok(chart_xml) = read_zip_text(bytes, &chart_part) {
+                    if let Ok(chart_xml) = package.read_text(&chart_part) {
                         charts.insert(chart_part, hex_digest(chart_xml.as_bytes()));
                     }
                 }
@@ -840,8 +1014,12 @@ fn read_sheet_charts(
     charts
 }
 
-fn read_relationships(bytes: &[u8], rels_name: &str, base: &str) -> BTreeMap<String, String> {
-    let Ok(xml) = read_zip_text(bytes, rels_name) else {
+fn read_relationships(
+    package: &Package<'_>,
+    rels_name: &str,
+    base: &str,
+) -> BTreeMap<String, String> {
+    let Ok(xml) = package.read_text(rels_name) else {
         return BTreeMap::new();
     };
     let mut rels = BTreeMap::new();
@@ -876,28 +1054,6 @@ fn hex_digest(bytes: &[u8]) -> String {
         let _ = write!(output, "{byte:02x}");
     }
     output
-}
-
-fn list_zip_names(bytes: &[u8]) -> std::result::Result<Vec<String>, String> {
-    let mut archive =
-        ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| error.to_string())?;
-    let mut names = Vec::with_capacity(archive.len());
-    for index in 0..archive.len() {
-        let entry = archive.by_index(index).map_err(|error| error.to_string())?;
-        names.push(entry.name().to_string());
-    }
-    Ok(names)
-}
-
-fn read_zip_text(bytes: &[u8], name: &str) -> std::result::Result<String, String> {
-    let mut archive =
-        ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| error.to_string())?;
-    let mut entry = archive.by_name(name).map_err(|error| error.to_string())?;
-    let mut text = String::new();
-    entry
-        .read_to_string(&mut text)
-        .map_err(|error| error.to_string())?;
-    Ok(text)
 }
 
 fn attribute_value(event: &quick_xml::events::BytesStart<'_>, local: &str) -> Option<String> {

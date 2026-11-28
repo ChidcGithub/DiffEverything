@@ -623,6 +623,9 @@ struct ChangeSink<'a> {
 }
 
 fn diff_value(path: &str, left: &Value, right: &Value, sink: &mut ChangeSink<'_>) {
+    if left == right {
+        return;
+    }
     if sink.changes.len() >= sink.max_changes {
         *sink.truncated = true;
         return;
@@ -671,6 +674,38 @@ fn diff_value(path: &str, left: &Value, right: &Value, sink: &mut ChangeSink<'_>
 }
 
 fn diff_array(path: &str, left: &[Value], right: &[Value], sink: &mut ChangeSink<'_>) {
+    if left == right || (left.is_empty() && right.is_empty()) {
+        return;
+    }
+    let mut prefix = 0usize;
+    while prefix < left.len() && prefix < right.len() && left[prefix] == right[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while suffix < left.len().saturating_sub(prefix)
+        && suffix < right.len().saturating_sub(prefix)
+        && left[left.len() - 1 - suffix] == right[right.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    diff_array_window(
+        path,
+        &left[prefix..left.len() - suffix],
+        &right[prefix..right.len() - suffix],
+        prefix,
+        prefix,
+        sink,
+    );
+}
+
+fn diff_array_window(
+    path: &str,
+    left: &[Value],
+    right: &[Value],
+    left_offset: usize,
+    right_offset: usize,
+    sink: &mut ChangeSink<'_>,
+) {
     if left.is_empty() && right.is_empty() {
         return;
     }
@@ -681,7 +716,7 @@ fn diff_array(path: &str, left: &[Value], right: &[Value], sink: &mut ChangeSink
     if left.is_empty() {
         for (index, value) in right.iter().enumerate() {
             sink.push(StructuredChange {
-                path: format!("{path}[{index}]"),
+                path: format!("{path}[{}]", right_offset + index),
                 kind: StructuredChangeKind::Added,
                 left: None,
                 right: Some(value.clone()),
@@ -693,7 +728,7 @@ fn diff_array(path: &str, left: &[Value], right: &[Value], sink: &mut ChangeSink
     if right.is_empty() {
         for (index, value) in left.iter().enumerate() {
             sink.push(StructuredChange {
-                path: format!("{path}[{index}]"),
+                path: format!("{path}[{}]", left_offset + index),
                 kind: StructuredChangeKind::Removed,
                 left: Some(value.clone()),
                 right: None,
@@ -703,7 +738,7 @@ fn diff_array(path: &str, left: &[Value], right: &[Value], sink: &mut ChangeSink
         return;
     }
     if left.len().saturating_mul(right.len()) > 10_000 {
-        diff_array_myers(path, left, right, sink);
+        diff_array_myers(path, left, right, left_offset, right_offset, sink);
         return;
     }
 
@@ -711,21 +746,21 @@ fn diff_array(path: &str, left: &[Value], right: &[Value], sink: &mut ChangeSink
         match (left_index, right_index) {
             (Some(left_index), Some(right_index)) => {
                 diff_value(
-                    &format!("{path}[{right_index}]"),
+                    &format!("{path}[{}]", right_offset + right_index),
                     &left[left_index],
                     &right[right_index],
                     sink,
                 );
             }
             (Some(left_index), None) => sink.push(StructuredChange {
-                path: format!("{path}[{left_index}]"),
+                path: format!("{path}[{}]", left_offset + left_index),
                 kind: StructuredChangeKind::Removed,
                 left: Some(left[left_index].clone()),
                 right: None,
                 breaking: false,
             }),
             (None, Some(right_index)) => sink.push(StructuredChange {
-                path: format!("{path}[{right_index}]"),
+                path: format!("{path}[{}]", right_offset + right_index),
                 kind: StructuredChangeKind::Added,
                 left: None,
                 right: Some(right[right_index].clone()),
@@ -861,9 +896,76 @@ fn shared_token_count(left: &[String], right: &[String]) -> usize {
     shared
 }
 
-fn diff_array_myers(path: &str, left: &[Value], right: &[Value], sink: &mut ChangeSink<'_>) {
-    let left_keys: Vec<String> = left.iter().map(Value::to_string).collect();
-    let right_keys: Vec<String> = right.iter().map(Value::to_string).collect();
+fn value_fingerprint(value: &Value) -> u128 {
+    let mut first = 0xcbf2_9ce4_8422_2325u64;
+    let mut second = 0x9e37_79b9_7f4a_7c15u64;
+    fingerprint_value(value, &mut first, &mut second);
+    ((first as u128) << 64) | second as u128
+}
+
+fn fingerprint_bytes(bytes: &[u8], first: &mut u64, second: &mut u64) {
+    for byte in bytes {
+        *first ^= u64::from(*byte);
+        *first = first.wrapping_mul(0x0000_0100_0000_01b3);
+        *second = second.rotate_left(7) ^ u64::from(*byte);
+        *second = second.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+fn fingerprint_value(value: &Value, first: &mut u64, second: &mut u64) {
+    match value {
+        Value::Null => fingerprint_bytes(b"z", first, second),
+        Value::Bool(value) => {
+            fingerprint_bytes(b"b", first, second);
+            fingerprint_bytes(if *value { b"1" } else { b"0" }, first, second);
+        }
+        Value::Number(value) => {
+            fingerprint_bytes(b"n", first, second);
+            if let Some(value) = value.as_i64() {
+                fingerprint_bytes(&value.to_le_bytes(), first, second);
+            } else if let Some(value) = value.as_u64() {
+                fingerprint_bytes(&value.to_le_bytes(), first, second);
+            } else if let Some(value) = value.as_f64() {
+                fingerprint_bytes(&value.to_bits().to_le_bytes(), first, second);
+            }
+        }
+        Value::String(value) => {
+            fingerprint_bytes(b"s", first, second);
+            fingerprint_bytes(&(value.len() as u64).to_le_bytes(), first, second);
+            fingerprint_bytes(value.as_bytes(), first, second);
+        }
+        Value::Array(values) => {
+            fingerprint_bytes(b"a", first, second);
+            fingerprint_bytes(&(values.len() as u64).to_le_bytes(), first, second);
+            for value in values {
+                fingerprint_value(value, first, second);
+            }
+        }
+        Value::Object(map) => {
+            fingerprint_bytes(b"o", first, second);
+            fingerprint_bytes(&(map.len() as u64).to_le_bytes(), first, second);
+            for (key, value) in map {
+                fingerprint_bytes(&(key.len() as u64).to_le_bytes(), first, second);
+                fingerprint_bytes(key.as_bytes(), first, second);
+                fingerprint_value(value, first, second);
+            }
+        }
+    }
+}
+
+fn diff_array_myers(
+    path: &str,
+    left: &[Value],
+    right: &[Value],
+    left_offset: usize,
+    right_offset: usize,
+    sink: &mut ChangeSink<'_>,
+) {
+    // Large arrays are aligned on stable 128-bit content fingerprints instead
+    // of serialising every value to a string. Actual values are still compared
+    // before any change is reported.
+    let left_keys: Vec<u128> = left.iter().map(value_fingerprint).collect();
+    let right_keys: Vec<u128> = right.iter().map(value_fingerprint).collect();
     for op in capture_diff_slices(Algorithm::Myers, &left_keys, &right_keys) {
         match op {
             DiffOp::Equal {
@@ -873,7 +975,7 @@ fn diff_array_myers(path: &str, left: &[Value], right: &[Value], sink: &mut Chan
             } => {
                 for offset in 0..len {
                     diff_value(
-                        &format!("{path}[{}]", new_index + offset),
+                        &format!("{path}[{}]", right_offset + new_index + offset),
                         &left[old_index + offset],
                         &right[new_index + offset],
                         sink,
@@ -885,7 +987,7 @@ fn diff_array_myers(path: &str, left: &[Value], right: &[Value], sink: &mut Chan
             } => {
                 for offset in 0..old_len {
                     sink.push(StructuredChange {
-                        path: format!("{path}[{}]", old_index + offset),
+                        path: format!("{path}[{}]", left_offset + old_index + offset),
                         kind: StructuredChangeKind::Removed,
                         left: Some(left[old_index + offset].clone()),
                         right: None,
@@ -898,7 +1000,7 @@ fn diff_array_myers(path: &str, left: &[Value], right: &[Value], sink: &mut Chan
             } => {
                 for offset in 0..new_len {
                     sink.push(StructuredChange {
-                        path: format!("{path}[{}]", new_index + offset),
+                        path: format!("{path}[{}]", right_offset + new_index + offset),
                         kind: StructuredChangeKind::Added,
                         left: None,
                         right: Some(right[new_index + offset].clone()),
@@ -915,7 +1017,7 @@ fn diff_array_myers(path: &str, left: &[Value], right: &[Value], sink: &mut Chan
                 let paired = old_len.min(new_len);
                 for offset in 0..paired {
                     diff_value(
-                        &format!("{path}[{}]", new_index + offset),
+                        &format!("{path}[{}]", right_offset + new_index + offset),
                         &left[old_index + offset],
                         &right[new_index + offset],
                         sink,
@@ -923,7 +1025,7 @@ fn diff_array_myers(path: &str, left: &[Value], right: &[Value], sink: &mut Chan
                 }
                 for offset in paired..old_len {
                     sink.push(StructuredChange {
-                        path: format!("{path}[{}]", old_index + offset),
+                        path: format!("{path}[{}]", left_offset + old_index + offset),
                         kind: StructuredChangeKind::Removed,
                         left: Some(left[old_index + offset].clone()),
                         right: None,
@@ -932,7 +1034,7 @@ fn diff_array_myers(path: &str, left: &[Value], right: &[Value], sink: &mut Chan
                 }
                 for offset in paired..new_len {
                     sink.push(StructuredChange {
-                        path: format!("{path}[{}]", new_index + offset),
+                        path: format!("{path}[{}]", right_offset + new_index + offset),
                         kind: StructuredChangeKind::Added,
                         left: None,
                         right: Some(right[new_index + offset].clone()),

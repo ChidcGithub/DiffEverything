@@ -223,7 +223,7 @@ fn xml_text_counts(xml: &[u8]) -> Result<(String, usize, usize), String> {
     Ok((text.trim().to_string(), paragraphs, slides))
 }
 
-fn metadata_fields(xml: &[u8]) -> Result<Value, String> {
+pub(crate) fn metadata_fields(xml: &[u8]) -> Result<Value, String> {
     let keys: BTreeSet<&str> = [
         "title",
         "subject",

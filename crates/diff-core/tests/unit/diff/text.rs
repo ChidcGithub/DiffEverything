@@ -10,6 +10,38 @@ fn counts_insertions_and_deletions() {
 }
 
 #[test]
+fn common_prefix_and_suffix_keep_original_line_numbers() {
+    let mut left = String::new();
+    let mut right = String::new();
+    for index in 0..100 {
+        let value = if index == 50 {
+            "old-value".to_string()
+        } else {
+            format!("line-{index}")
+        };
+        left.push_str(&value);
+        left.push('\n');
+        let value = if index == 50 {
+            "new-value".to_string()
+        } else {
+            format!("line-{index}")
+        };
+        right.push_str(&value);
+        right.push('\n');
+    }
+    let diff = compare_text(&left, &right, 3, 100);
+    assert_eq!(diff.hunks.len(), 1);
+    assert_eq!(diff.hunks[0].old_start, 48);
+    assert_eq!(diff.hunks[0].new_start, 48);
+    assert!(
+        diff.hunks[0]
+            .lines
+            .iter()
+            .any(|line| line.old_lineno == Some(51))
+    );
+}
+
+#[test]
 fn equal_text_has_no_hunks() {
     let diff = compare_text("same\n", "same\n", 3, 100);
     assert_eq!(diff.added_lines, 0);

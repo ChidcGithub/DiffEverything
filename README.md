@@ -1,6 +1,6 @@
 # DiffEverything
 
-**Current release: 1.2.0 (Toyger)**
+**Current release: 1.3.0 (Toyger)**
 
 A Rust CLI that compares heterogeneous files by normalizing them into one diff tree. It does not replace `diff`; it adds format-aware comparison and multiple report formats.
 
@@ -12,12 +12,12 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 |---|---|---|
 | Text / code | Any text, UTF-8 / UTF-16 / GBK, `.reg` exports | Line diff, context, word-level highlights, ignore whitespace / case |
 | Syntax-aware | Rust, Python, JS/JSX, TS/TSX, C, C++, Go, Java, Bash, Ruby, C#, Swift, Lua | tree-sitter token diff, full syntax-tree diff (`--mode tree`), bounded syntax-event graph diff (`--mode graph`, including non-local moves), comment ignoring |
-| Structured data | JSON / JSON5 / YAML / TOML / INI / XML / HTML / Plist (XML + binary) / Pickle / Gettext (.mo) / OpenAPI | Semantic tree diff with path-level added / removed / changed, array similarity alignment, OpenAPI breaking-change markers |
+| Structured data | JSON / JSON5 / YAML / TOML / INI / XML / HTML / Plist (XML + binary) / Pickle / Gettext (.mo) / OpenAPI | Semantic tree diff with path-level added / removed / changed, equal-subtree short-circuiting, array prefix/suffix trimming, stable fingerprint alignment, OpenAPI breaking-change markers |
 | Serialized data | Parquet / Avro / ORC / CBOR / MessagePack / Protobuf | Parquet/Avro schema and row values; ORC metadata, stripe statistics and payload hashes; CBOR/MessagePack values; generic Protobuf wire fields; `--detail concise` caps changes, `full` shows every change |
 | Databases | SQLite 3 `.db` / `.sqlite` | Semantic diff of tables, columns, rows, indexes and triggers; equal databases with different page sizes or layouts compare equal |
 | Cross-format | JSON ↔ YAML ↔ TOML ↔ INI ↔ XML ↔ HTML ↔ Plist ↔ Pickle | Parse both sides into a common tree, e.g. `YAML+JSON`, `PLIST+JSON`, `PICKLE+JSON` |
-| Tables | CSV / TSV | Header, row and cell diff; keyed or LCS-aligned rows, row moves, duplicate keys, encoding/BOM detection, ignored columns and numeric tolerance |
-| Spreadsheets | XLSX / XLS / ODS | Worksheet and cell diff; sheet add/remove/reorder/rename, hidden sheets/rows/columns, merged ranges, defined names, drawing/chart references, conditional-formatting rules, cached values plus optional formulas, and row insertion/deletion alignment |
+| Tables | CSV / TSV | Header, row and cell diff; explicit `--key`, otherwise a unique column is inferred as an implicit key (with a warning), LCS fallback, row moves, duplicate keys, encoding/BOM detection, ignored columns and numeric tolerance |
+| Spreadsheets | XLSX / XLS / ODS | Worksheet and cell diff; sheet add/remove/reorder/rename, hidden sheets/rows/columns, merged ranges, defined names, drawing/chart references, conditional-formatting rules, cached values plus optional formulas, row insertion/deletion alignment, and moved row/column detection without cascading cell changes |
 | Documents | PDF / OFD / DOCX / PPTX | PDF/OFD page-aligned text-block diff with positions, page sizes/metadata and page add/remove/move detection; DOCX paragraph/heading/list/table blocks with precise run/paragraph font metrics and media hashes; PPTX presentation-order slides with shape text/tables/media/notes, geometry, font metrics and hidden-slide state; PDF↔DOCX/ODT and DOCX↔ODT/PPTX↔ODP block mapping |
 | Open documents / mail | ODT / ODP / EPUB / RTF / EML | ODT/ODP block and table diff with metadata/media hashes; EPUB metadata, spine and chapter text; RTF paragraphs and control words; EML headers, text/HTML bodies, attachments and hashes |
 | Images / OCR | PNG / JPEG / GIF / WebP / BMP / TIFF / ICO / CUR | Pixel difference ratio, YIQ perceptual tolerance (`--image-threshold`), max channel delta, bounding box, changed regions, heatmap, side-by-side image, Tesseract OCR, scanned-PDF OCR |
@@ -191,7 +191,7 @@ Common examples:
 `--version` prints the codename plus build metadata; `-V` prints only the first line:
 
 ```text
-diff-everything 1.2.0 (Toyger)
+diff-everything 1.3.0 (Toyger)
 Commit:     <git-commit>
 Build:      release / <target-triple>
 Rust:       <rustc-version>
@@ -347,7 +347,7 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 - Example terminal layout (colors omitted):
 
 ```text
-DiffEverything 1.2.0 (Toyger)
+DiffEverything 1.3.0 (Toyger)
 ========================================================================
 left     fixtures\text\old.txt  [text | 105 B]
 right    fixtures\text\new.txt  [text | 160 B]
@@ -379,6 +379,11 @@ elapsed  7 ms
 
 ## Performance, Size and Hardening
 
+- The 1.3.0 engine avoids repeated parsing: PDF text, positioned blocks, metadata and page geometry come from one `lopdf::Document` per side; DOCX/PPTX/ODT/ODP and XLSX metadata share one open ZIP `Package` per side; left and right document/workbook parsing runs through `rayon::join`. Measured together with the other changes, a 1000-page PDF is about 1.85× faster, PPTX about 2.1× faster and XLSX about 1.5× faster. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+- Text comparison strips common line prefixes/suffixes before running Myers/patience, switches to patience for large changed middles, stops building hunks at the detail cap, skips word-level spans above a threshold, and avoids a full normalization copy when `--ignore-whitespace`/`--ignore-case` are off. On a 49 MB file with ten changed lines this is about 10× faster with 47% lower peak RSS, and memory is 80% lower on the 4.8 MB variant.
+- Structured comparison returns immediately for equal subtrees, trims equal array edges, and aligns large arrays on stable 128-bit content fingerprints rather than serialising every value. The 50k-record JSON benchmark is about 1.65× faster with 12% lower peak RSS.
+- Directories and archives pair unmatched entries by `(size, SHA-256)` and report `renamed_from`, so a rename is one moved entry instead of add+remove. Only unmatched entries are hashed, directory hashes hold an in-flight permit sized to the file, duplicate content is paired stably, and explicit CSV keys still win over implicit keys. Rename detection never changes `completeness` or exit codes.
+- ZIP comparison scans the central directory once, keeps only entry metadata, pre-checks unpacked sizes, reads payloads on demand, and materialises changed pairs in bounded 32 MiB batches. On the 10k-entry / 82 MB archive case this cuts peak RSS by 72% and is about 1.2× faster.
 - `--detail concise` is enforced while comparing, not only after the full report is built: text hunks, table rows, workbook cells, document blocks and slides stop at the display cap (default 10, configurable with `--detail <N>`). The cap is display-only; it does not change `completeness` or turn an equal comparison into exit code `3`.
 - `cargo build --release` is the only optimized profile: `opt-level = 3`, thin LTO, four codegen units and symbol stripping. Thin LTO keeps the binary close to a fat-LTO build while building roughly three times faster, and `cargo test --release` shares the same dependency artifacts, so the tested and the shipped binary come from one profile.
 - `crates/diff-core/tests/integration.rs` is the single integration-test target; the six case modules are included from `tests/cases/` and no longer produce six separate link steps.

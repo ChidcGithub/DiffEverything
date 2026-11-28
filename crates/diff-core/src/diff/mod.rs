@@ -13,6 +13,7 @@ pub mod java_class;
 pub mod media;
 pub mod notebook;
 pub mod openssh_key;
+pub mod package;
 pub mod packages;
 pub mod serialization;
 pub mod sqlite;

@@ -1,5 +1,5 @@
 use crate::model::*;
-use crate::render::{display_path, human_size, marker_for, summary_parts, truncate_chars};
+use crate::render::{display_node_label, human_size, marker_for, summary_parts, truncate_chars};
 use std::fmt::Write;
 
 pub fn render(report: &DiffReport) -> String {
@@ -770,6 +770,8 @@ fn render_body(node: &DiffNode, out: &mut String) {
             out.push_str("</ul>\n");
             for sheet in &diff.sheets {
                 if sheet.cells.is_empty()
+                    && sheet.rows_moved.is_empty()
+                    && sheet.columns_moved.is_empty()
                     && sheet.left_hidden == sheet.right_hidden
                     && sheet.merges_added.is_empty()
                     && sheet.merges_removed.is_empty()
@@ -801,6 +803,21 @@ fn render_body(node: &DiffNode, out: &mut String) {
                     sheet.right_columns
                 );
                 out.push_str("<ul class=\"changes\">\n");
+                for row in &sheet.rows_moved {
+                    let _ = writeln!(
+                        out,
+                        "<li class=\"move\"><code>~ row {}</code> moved to row {}</li>",
+                        row.left_row, row.right_row
+                    );
+                }
+                for column in &sheet.columns_moved {
+                    let _ = writeln!(
+                        out,
+                        "<li class=\"move\"><code>~ column {}</code> moved to {}</li>",
+                        esc(&column.left_column),
+                        esc(&column.right_column)
+                    );
+                }
                 for merge in &sheet.merges_added {
                     let _ = writeln!(out, "<li class=\"add\"><code>+ merge {merge}</code></li>");
                 }
@@ -1089,7 +1106,7 @@ fn render_body(node: &DiffNode, out: &mut String) {
             let _ = writeln!(
                 out,
                 "<div class=\"row {class}\"><span class=\"marker\">{marker}</span><code>{}</code><span class=\"kind\">{} · {} · {}</span></div>",
-                esc(&display_path(&node.label)),
+                esc(&display_node_label(node)),
                 info.kind.label(),
                 human_size(info.size),
                 side
@@ -1099,7 +1116,7 @@ fn render_body(node: &DiffNode, out: &mut String) {
             let _ = writeln!(
                 out,
                 "<p class=\"note\">= {} ({})</p>",
-                esc(&display_path(&node.label)),
+                esc(&display_node_label(node)),
                 info.kind.label()
             );
         }
@@ -1139,10 +1156,15 @@ fn render_body(node: &DiffNode, out: &mut String) {
 fn render_entry(entry: &DiffNode, out: &mut String) {
     match &entry.body {
         DiffBody::Equal(info) => {
+            let (class, marker) = if entry.renamed_from.is_some() {
+                ("renamed", "~")
+            } else {
+                ("equal", "=")
+            };
             let _ = writeln!(
                 out,
-                "<div class=\"row equal\"><span class=\"marker\">=</span><code>{}</code><span class=\"kind\">{}</span></div>",
-                esc(&display_path(&entry.label)),
+                "<div class=\"row {class}\"><span class=\"marker\">{marker}</span><code>{}</code><span class=\"kind\">{}</span></div>",
+                esc(&display_node_label(entry)),
                 info.kind.label()
             );
         }
@@ -1154,7 +1176,7 @@ fn render_entry(entry: &DiffNode, out: &mut String) {
             let _ = writeln!(
                 out,
                 "<div class=\"row {class}\"><span class=\"marker\">{marker}</span><code>{}</code><span class=\"kind\">{} · {} · {}</span></div>",
-                esc(&display_path(&entry.label)),
+                esc(&display_node_label(entry)),
                 info.kind.label(),
                 human_size(info.size),
                 side
@@ -1170,7 +1192,7 @@ fn render_entry(entry: &DiffNode, out: &mut String) {
             let _ = writeln!(
                 out,
                 "<details class=\"entry\"{open}><summary><span class=\"marker {status_class}\">{marker}</span><code>{}</code><span class=\"kind\">{}</span></summary><div class=\"entry-body\">",
-                esc(&display_path(&entry.label)),
+                esc(&display_node_label(entry)),
                 body_kind_label(&entry.body),
                 status_class = status_class(entry.status),
             );

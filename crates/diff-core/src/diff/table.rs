@@ -71,12 +71,24 @@ pub fn compare_tables_with_options(
     let mut rows = Vec::new();
     let mut truncated = false;
     let mut duplicate_keys = Vec::new();
-    let key_indexes = options.key_column.and_then(|key| {
-        left_table
-            .column_index
-            .get(key)
-            .zip(right_table.column_index.get(key))
-    });
+    let (key_indexes, implicit_key) = if let Some(key) = options.key_column {
+        (
+            left_table
+                .column_index
+                .get(key)
+                .zip(right_table.column_index.get(key)),
+            None,
+        )
+    } else {
+        let implicit = detect_implicit_key(&left_table, &right_table, &ignored);
+        let indexes = implicit.as_ref().and_then(|key| {
+            left_table
+                .column_index
+                .get(key)
+                .zip(right_table.column_index.get(key))
+        });
+        (indexes, implicit)
+    };
 
     if let Some((left_key_index, right_key_index)) = key_indexes {
         // Keep every occurrence instead of letting a duplicate key overwrite
@@ -177,9 +189,43 @@ pub fn compare_tables_with_options(
         columns_added,
         columns_removed,
         columns_moved,
+        implicit_key,
         rows,
         duplicate_keys,
         truncated,
+    })
+}
+
+fn detect_implicit_key(
+    left: &ParsedTable,
+    right: &ParsedTable,
+    ignored: &BTreeSet<&str>,
+) -> Option<String> {
+    if left.rows.is_empty() || right.rows.is_empty() {
+        return None;
+    }
+    left.headers
+        .iter()
+        .filter(|header| {
+            right.column_index.contains_key(*header) && !ignored.contains(header.as_str())
+        })
+        .find(|header| {
+            let Some(left_index) = left.column_index.get(*header) else {
+                return false;
+            };
+            let Some(right_index) = right.column_index.get(*header) else {
+                return false;
+            };
+            unique_column(left, *left_index) && unique_column(right, *right_index)
+        })
+        .cloned()
+}
+
+fn unique_column(table: &ParsedTable, index: usize) -> bool {
+    let mut seen = BTreeSet::new();
+    table.rows.iter().all(|row| {
+        let value = row.get(index).map(|value| value.trim()).unwrap_or("");
+        !value.is_empty() && seen.insert(value.to_string())
     })
 }
 

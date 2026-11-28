@@ -185,13 +185,13 @@ fn collect_changed(node: &DiffNode, out: &mut Vec<(char, String)>) {
             } else {
                 '+'
             };
-            out.push((marker, display_path(&node.label)));
+            out.push((marker, display_node_label(node)));
         }
         DiffBody::Unsupported(_) => {
-            out.push(('!', display_path(&node.label)));
+            out.push(('!', display_node_label(node)));
         }
         _ if node.status.is_different() => {
-            out.push(('~', display_path(&node.label)));
+            out.push(('~', display_node_label(node)));
         }
         _ => {}
     }
@@ -203,6 +203,16 @@ pub fn display_path(label: &str) -> String {
     } else {
         sanitize_controls(label).into_owned()
     }
+}
+
+/// A node path plus its previous path when content was detected as renamed or
+/// moved. Kept in one place so every renderer uses the same wording.
+pub fn display_node_label(node: &DiffNode) -> String {
+    let mut label = display_path(&node.label);
+    if let Some(previous) = &node.renamed_from {
+        label.push_str(&format!(" (renamed from {})", display_path(previous)));
+    }
+    label
 }
 
 pub fn display_title(label: &str) -> String {

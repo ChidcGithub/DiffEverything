@@ -478,6 +478,178 @@ fn table_change_limit_marks_the_comparison_incomplete() {
 }
 
 #[test]
+fn detects_directory_renames_by_content() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left");
+    let right = dir.path().join("right");
+    fs::create_dir_all(&left).unwrap();
+    fs::create_dir_all(&right).unwrap();
+    fs::write(left.join("old-name.txt"), "same content\n").unwrap();
+    fs::write(right.join("new-name.txt"), "same content\n").unwrap();
+
+    let report = DiffEngine::new(DiffOptions::default())
+        .compare(&left, &right)
+        .unwrap();
+    assert_eq!(report.status, DiffStatus::Different);
+    assert_eq!(report.summary.files_compared, 1);
+    assert_eq!(report.summary.files_changed, 1);
+    assert_eq!(report.summary.files_equal, 0);
+    let DiffBody::Directory(directory) = &report.root.body else {
+        panic!("expected directory diff, got {:?}", report.root.body);
+    };
+    let renamed = directory
+        .entries
+        .iter()
+        .find(|entry| entry.renamed_from.is_some())
+        .expect("renamed entry");
+    assert_eq!(renamed.label, "new-name.txt");
+    assert_eq!(renamed.renamed_from.as_deref(), Some("old-name.txt"));
+    assert!(
+        !directory
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.body, DiffBody::OneSided(_))),
+        "{:?}",
+        directory.entries
+    );
+}
+
+#[test]
+fn detects_archive_renames_by_content() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left.zip");
+    let right = dir.path().join("right.zip");
+    fs::write(&left, zip_bytes(&[("old.txt", b"same content\n")])).unwrap();
+    fs::write(&right, zip_bytes(&[("new.txt", b"same content\n")])).unwrap();
+
+    let report = DiffEngine::new(DiffOptions::default())
+        .compare(&left, &right)
+        .unwrap();
+    assert_eq!(report.summary.files_compared, 2);
+    assert_eq!(report.summary.files_changed, 2);
+    assert_eq!(report.summary.files_equal, 0);
+    let DiffBody::Archive(archive) = &report.root.body else {
+        panic!("expected archive diff, got {:?}", report.root.body);
+    };
+    let renamed = archive
+        .entries
+        .iter()
+        .find(|entry| entry.renamed_from.is_some())
+        .expect("renamed entry");
+    assert_eq!(renamed.label, "new.txt");
+    assert_eq!(renamed.renamed_from.as_deref(), Some("old.txt"));
+}
+
+#[test]
+fn rename_pairs_duplicate_content_stably() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left");
+    let right = dir.path().join("right");
+    fs::create_dir_all(&left).unwrap();
+    fs::create_dir_all(&right).unwrap();
+    for name in ["old-1.txt", "old-2.txt"] {
+        fs::write(left.join(name), "duplicate content\n").unwrap();
+    }
+    for name in ["new-1.txt", "new-2.txt"] {
+        fs::write(right.join(name), "duplicate content\n").unwrap();
+    }
+
+    let report = DiffEngine::new(DiffOptions::default())
+        .compare(&left, &right)
+        .unwrap();
+    assert_eq!(report.status, DiffStatus::Different);
+    assert_eq!(report.completeness, ComparisonCompleteness::Complete);
+    let DiffBody::Directory(directory) = &report.root.body else {
+        panic!("expected directory diff, got {:?}", report.root.body);
+    };
+    let pairs: Vec<(&str, Option<&str>)> = directory
+        .entries
+        .iter()
+        .map(|entry| (entry.label.as_str(), entry.renamed_from.as_deref()))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("new-1.txt", Some("old-1.txt")),
+            ("new-2.txt", Some("old-2.txt")),
+        ],
+        "{:?}",
+        directory.entries
+    );
+}
+
+#[test]
+fn renamed_entries_reach_json_and_changed_paths() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left");
+    let right = dir.path().join("right");
+    fs::create_dir_all(&left).unwrap();
+    fs::create_dir_all(&right).unwrap();
+    fs::write(left.join("old.txt"), "same content\n").unwrap();
+    fs::write(right.join("new.txt"), "same content\n").unwrap();
+
+    let report = DiffEngine::new(DiffOptions::default())
+        .compare(&left, &right)
+        .unwrap();
+    let json = serde_json::to_string(&report).unwrap();
+    assert!(json.contains("\"renamed_from\":\"old.txt\""), "{json}");
+    let changed = diff_core::render::changed_entries(&report.root);
+    assert!(
+        changed
+            .iter()
+            .any(|(marker, path)| *marker == '~' && path.contains("renamed from old.txt")),
+        "{changed:?}"
+    );
+}
+
+#[test]
+fn zip_stream_compares_many_entries_without_losing_order() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left.zip");
+    let right = dir.path().join("right.zip");
+    let entries: Vec<(String, Vec<u8>)> = (0..1_000)
+        .map(|index| {
+            (
+                format!("dir/{index:04}.txt"),
+                format!("value {index}\n").into_bytes(),
+            )
+        })
+        .collect();
+    let mut right_entries = entries.clone();
+    right_entries[500].1 = b"changed\n".to_vec();
+    let left_refs: Vec<(&str, &[u8])> = entries
+        .iter()
+        .map(|(name, data)| (name.as_str(), data.as_slice()))
+        .collect();
+    let right_refs: Vec<(&str, &[u8])> = right_entries
+        .iter()
+        .map(|(name, data)| (name.as_str(), data.as_slice()))
+        .collect();
+    fs::write(&left, zip_bytes(&left_refs)).unwrap();
+    fs::write(&right, zip_bytes(&right_refs)).unwrap();
+
+    let report = DiffEngine::new(DiffOptions {
+        max_zip_entries: 2_000,
+        ..DiffOptions::default()
+    })
+    .compare(&left, &right)
+    .unwrap();
+    let DiffBody::Archive(archive) = &report.root.body else {
+        panic!("expected archive diff, got {:?}", report.root.body);
+    };
+    assert_eq!(archive.total_entries, 1_000);
+    assert_eq!(
+        archive
+            .entries
+            .iter()
+            .filter(|entry| entry.status.is_different())
+            .count(),
+        1
+    );
+    assert_eq!(archive.entries[500].label, "dir/0500.txt");
+}
+
+#[test]
 fn expanded_bytes_budget_limits_nested_archives() {
     let dir = tempdir().unwrap();
     // The inner archives differ, so the outer files are not byte-identical and

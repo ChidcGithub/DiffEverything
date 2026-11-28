@@ -1,3 +1,4 @@
+use crate::diff::package::Package;
 use crate::diff::{table, text};
 use crate::model::{
     BlockChange, ChangeKind, DocumentDiff, DocumentTableDiff, FieldChange, MediaChange,
@@ -7,8 +8,11 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
-use zip::ZipArchive;
+
+/// One open ZIP package per input side. DOCX/PPTX/ODT/ODP parsing and media
+/// hashing share it, so the central directory is scanned once instead of once
+/// per part.
+type MediaHashes = BTreeMap<String, (String, u64)>;
 
 pub fn extract_pdf_text(bytes: &[u8]) -> std::result::Result<String, String> {
     if let Ok(Some(text)) = page_aware_pdf_text(bytes) {
@@ -46,9 +50,14 @@ fn page_aware_pdf_text(bytes: &[u8]) -> std::result::Result<Option<String>, Stri
 }
 
 pub fn extract_ofd_text(bytes: &[u8]) -> std::result::Result<String, String> {
-    let names = list_zip_names(bytes)?;
-    let mut pages: Vec<String> = names
-        .into_iter()
+    let package = Package::new(bytes)?;
+    extract_ofd_text_package(&package)
+}
+
+fn extract_ofd_text_package(package: &Package<'_>) -> std::result::Result<String, String> {
+    let mut pages: Vec<&String> = package
+        .names
+        .iter()
         .filter(|name| name.contains("/Pages/") && name.ends_with(".xml"))
         .collect();
     pages.sort();
@@ -58,7 +67,7 @@ pub fn extract_ofd_text(bytes: &[u8]) -> std::result::Result<String, String> {
 
     let mut out = String::new();
     for (index, name) in pages.iter().enumerate() {
-        let xml = read_zip_entry(bytes, name)?;
+        let xml = package.read_text(name)?;
         let text = extract_ofd_xml(&xml)?;
         if !text.trim().is_empty() {
             out.push_str(&format!("# Page {}\n{}\n\n", index + 1, text.trim()));
@@ -107,25 +116,30 @@ fn extract_ofd_xml(xml: &str) -> std::result::Result<String, String> {
 }
 
 pub fn extract_docx_text(bytes: &[u8]) -> std::result::Result<String, String> {
-    let names = list_zip_names(bytes)?;
-    let mut part_names: Vec<String> = names
-        .into_iter()
+    let package = Package::new(bytes)?;
+    extract_docx_text_package(&package)
+}
+
+fn extract_docx_text_package(package: &Package<'_>) -> std::result::Result<String, String> {
+    let mut part_names: Vec<&String> = package
+        .names
+        .iter()
         .filter(|name| is_word_text_part(name))
         .collect();
     part_names.sort();
-    if !part_names.iter().any(|name| name == "word/document.xml") {
+    if !part_names.iter().any(|name| *name == "word/document.xml") {
         return Err("DOCX has no word/document.xml".to_string());
     }
 
     let mut out = String::new();
     for name in part_names {
-        let xml = read_zip_entry(bytes, &name)?;
+        let xml = package.read_text(name)?;
         let text = extract_word_xml(&xml)?;
         if text.trim().is_empty() {
             continue;
         }
         if name != "word/document.xml" {
-            let label = name.rsplit('/').next().unwrap_or(&name);
+            let label = name.rsplit('/').next().unwrap_or(name);
             out.push_str(&format!("# {label}\n"));
         }
         out.push_str(&text);
@@ -135,21 +149,25 @@ pub fn extract_docx_text(bytes: &[u8]) -> std::result::Result<String, String> {
 }
 
 pub fn extract_pptx_text(bytes: &[u8]) -> std::result::Result<String, String> {
-    let names = list_zip_names(bytes)?;
-    let slides = slide_part_order(bytes, &names)?;
+    let package = Package::new(bytes)?;
+    extract_pptx_text_package(&package)
+}
+
+fn extract_pptx_text_package(package: &Package<'_>) -> std::result::Result<String, String> {
+    let slides = slide_part_order(package)?;
     if slides.is_empty() {
         return Err("no slides found in PPTX".to_string());
     }
 
     let mut out = String::new();
     for (index, (name, _)) in slides.iter().enumerate() {
-        let xml = read_zip_entry(bytes, name)?;
+        let xml = package.read_text(name)?;
         let text = extract_slide_text(&xml)?;
         // Use the presentation order, not the slideN.xml file number: a
         // reordered deck keeps its file names but changes slide order.
         out.push_str(&format!("# Slide {}\n{text}\n\n", index + 1));
-        if let Some(notes_name) = slide_notes_part(bytes, name, &names)? {
-            let notes_xml = read_zip_entry(bytes, &notes_name)?;
+        if let Some(notes_name) = slide_notes_part(package, name)? {
+            let notes_xml = package.read_text(&notes_name)?;
             let notes = extract_slide_text(&notes_xml)?;
             if !notes.trim().is_empty() {
                 out.push_str(&format!("# Notes {}\n{notes}\n\n", index + 1));
@@ -165,18 +183,13 @@ pub fn extract_pptx_text(bytes: &[u8]) -> std::result::Result<String, String> {
 /// Returns slide parts in presentation order, resolved through
 /// `ppt/presentation.xml` and its relationships. Falls back to numeric file
 /// names when the package does not expose a usable slide list.
-fn slide_part_order(
-    bytes: &[u8],
-    names: &[String],
-) -> std::result::Result<Vec<(String, bool)>, String> {
-    if names.iter().any(|name| name == "ppt/presentation.xml")
-        && let Ok(xml) = read_zip_entry(bytes, "ppt/presentation.xml")
+fn slide_part_order(package: &Package<'_>) -> std::result::Result<Vec<(String, bool)>, String> {
+    if package.contains("ppt/presentation.xml")
+        && let Ok(xml) = package.read_text("ppt/presentation.xml")
         && let Ok(ids) = presentation_slide_ids(&xml)
         && !ids.is_empty()
-        && names
-            .iter()
-            .any(|name| name == "ppt/_rels/presentation.xml.rels")
-        && let Ok(rels_xml) = read_zip_entry(bytes, "ppt/_rels/presentation.xml.rels")
+        && package.contains("ppt/_rels/presentation.xml.rels")
+        && let Ok(rels_xml) = package.read_text("ppt/_rels/presentation.xml.rels")
     {
         let rels = relationships(&rels_xml)?;
         let targets: std::collections::BTreeMap<String, String> = rels
@@ -187,7 +200,7 @@ fn slide_part_order(
         let mut ordered = Vec::new();
         for (id, hidden) in ids {
             if let Some(target) = targets.get(&id)
-                && names.iter().any(|name| name == target)
+                && package.contains(target)
             {
                 ordered.push((target.clone(), hidden));
             }
@@ -195,7 +208,7 @@ fn slide_part_order(
         if !ordered.is_empty() {
             // Keep slides whose relationship was not resolvable instead of
             // silently dropping them.
-            let mut numbered = numbered_parts(names, "ppt/slides/slide", ".xml");
+            let mut numbered = numbered_parts(&package.names, "ppt/slides/slide", ".xml");
             numbered.sort_by_key(|(number, _)| *number);
             for (_, name) in numbered {
                 if !ordered.iter().any(|(existing, _)| existing == &name) {
@@ -206,7 +219,7 @@ fn slide_part_order(
         }
     }
 
-    let mut slides = numbered_parts(names, "ppt/slides/slide", ".xml");
+    let mut slides = numbered_parts(&package.names, "ppt/slides/slide", ".xml");
     slides.sort_by_key(|(number, _)| *number);
     Ok(slides.into_iter().map(|(_, name)| (name, false)).collect())
 }
@@ -301,14 +314,13 @@ fn relationships(xml: &str) -> std::result::Result<Vec<(String, String, String)>
 }
 
 fn slide_notes_part(
-    bytes: &[u8],
+    package: &Package<'_>,
     slide: &str,
-    names: &[String],
 ) -> std::result::Result<Option<String>, String> {
     let file = slide.rsplit('/').next().unwrap_or(slide);
     let rels_name = format!("ppt/slides/_rels/{file}.rels");
-    if names.iter().any(|name| name == &rels_name)
-        && let Ok(rels_xml) = read_zip_entry(bytes, &rels_name)
+    if package.contains(&rels_name)
+        && let Ok(rels_xml) = package.read_text(&rels_name)
     {
         let rels = relationships(&rels_xml)?;
         if let Some((_, _, target)) = rels
@@ -316,7 +328,7 @@ fn slide_notes_part(
             .find(|(_, kind, _)| kind.ends_with("/notesSlide"))
         {
             let target = resolve_part_path("ppt/slides", &target);
-            if names.iter().any(|name| name == &target) {
+            if package.contains(&target) {
                 return Ok(Some(target));
             }
         }
@@ -329,7 +341,7 @@ fn slide_notes_part(
         .and_then(|rest| rest.strip_suffix(".xml"));
     if let Some(number) = number {
         let fallback = format!("ppt/notesSlides/notesSlide{number}.xml");
-        if names.iter().any(|name| name == &fallback) {
+        if package.contains(&fallback) {
             return Ok(Some(fallback));
         }
     }
@@ -355,81 +367,189 @@ fn resolve_part_path(base: &str, target: &str) -> String {
     parts.join("/")
 }
 
+#[derive(Debug)]
+struct PdfParsed {
+    pages: Vec<String>,
+    blocks: Vec<ParsedBlock>,
+    metadata: BTreeMap<String, String>,
+}
+
 pub fn compare_pdf_documents(
     left: &[u8],
     right: &[u8],
 ) -> std::result::Result<DocumentDiff, String> {
-    let left_pages = pdf_page_texts(left)?;
-    let right_pages = pdf_page_texts(right)?;
-    let left_blocks = pdf_positioned_blocks(left).unwrap_or_else(|_| pages_to_blocks(&left_pages));
-    let right_blocks =
-        pdf_positioned_blocks(right).unwrap_or_else(|_| pages_to_blocks(&right_pages));
-    let mut diff =
-        compare_page_blocks("pdf", &left_pages, &right_pages, left_blocks, right_blocks)?;
-    let left_meta = pdf_metadata(left).unwrap_or_default();
-    let right_meta = pdf_metadata(right).unwrap_or_default();
-    diff.metadata
-        .extend(compare_metadata(&left_meta, &right_meta));
+    // Parse both sides concurrently, but keep one Document per side. The old
+    // implementation loaded each PDF three times (text, blocks and metadata).
+    let (left_parsed, right_parsed) = rayon::join(|| parse_pdf(left), || parse_pdf(right));
+    let left_parsed = left_parsed?;
+    let right_parsed = right_parsed?;
+    let left_blocks = if left_parsed.blocks.is_empty() {
+        pages_to_blocks(&left_parsed.pages)
+    } else {
+        left_parsed.blocks
+    };
+    let right_blocks = if right_parsed.blocks.is_empty() {
+        pages_to_blocks(&right_parsed.pages)
+    } else {
+        right_parsed.blocks
+    };
+    let mut diff = compare_page_blocks(
+        "pdf",
+        &left_parsed.pages,
+        &right_parsed.pages,
+        left_blocks,
+        right_blocks,
+    )?;
+    diff.metadata.extend(compare_metadata(
+        &left_parsed.metadata,
+        &right_parsed.metadata,
+    ));
     Ok(diff)
 }
 
-fn pdf_positioned_blocks(bytes: &[u8]) -> std::result::Result<Vec<ParsedBlock>, String> {
+fn parse_pdf(bytes: &[u8]) -> std::result::Result<PdfParsed, String> {
     let document = lopdf::Document::load_mem(bytes).map_err(|error| error.to_string())?;
+    let mut pages = Vec::new();
     let mut blocks = Vec::new();
+    let mut metadata = pdf_info_metadata(&document);
+    let mut page_numbers = Vec::new();
+
     for (page_number, page_id) in document.get_pages() {
+        page_numbers.push(page_number);
+
+        let mut text = String::new();
+        for chunk in document
+            .extract_text_chunks(&[page_number])
+            .into_iter()
+            .flatten()
+        {
+            text.push_str(&chunk);
+        }
+        pages.push(normalize_text(text));
+
         let content = document.get_page_content(page_id);
-        let Ok(content) = lopdf::content::Content::decode(&content) else {
+        if let Ok(content) = lopdf::content::Content::decode(&content) {
+            let mut x = 0.0f32;
+            let mut y = 0.0f32;
+            let mut block_index = 0usize;
+            for operation in content.operations {
+                match operation.operator.as_str() {
+                    "Tm" => {
+                        if let Some(values) = operation_numbers(&operation.operands, 6) {
+                            x = values[4];
+                            y = values[5];
+                        }
+                    }
+                    "Td" => {
+                        if let Some(values) = operation_numbers(&operation.operands, 2) {
+                            x += values[0];
+                            y += values[1];
+                        }
+                    }
+                    "Tj" | "'" => {
+                        if let Some(text) = operation_text(&operation.operands) {
+                            push_positioned_block(
+                                &mut blocks,
+                                page_number,
+                                &mut block_index,
+                                text,
+                                x,
+                                y,
+                            );
+                        }
+                    }
+                    "TJ" => {
+                        if let Some(text) = operation_array_text(&operation.operands) {
+                            push_positioned_block(
+                                &mut blocks,
+                                page_number,
+                                &mut block_index,
+                                text,
+                                x,
+                                y,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let Ok(page) = document
+            .get_object(page_id)
+            .and_then(|object| object.as_dict())
+        else {
             continue;
         };
-        let mut x = 0.0f32;
-        let mut y = 0.0f32;
-        let mut block_index = 0usize;
-        for operation in content.operations {
-            match operation.operator.as_str() {
-                "Tm" => {
-                    if let Some(values) = operation_numbers(&operation.operands, 6) {
-                        x = values[4];
-                        y = values[5];
-                    }
+        let Some(media_box) = page.get(b"MediaBox").ok().and_then(|object| {
+            if let Ok(id) = object.as_reference() {
+                document
+                    .get_object(id)
+                    .ok()
+                    .and_then(|object| object.as_array().ok())
+            } else {
+                object.as_array().ok()
+            }
+        }) else {
+            continue;
+        };
+        let numbers: Vec<String> = media_box
+            .iter()
+            .filter_map(|value| value.as_float().ok().map(|value| format!("{value:.1}")))
+            .collect();
+        if numbers.len() == 4 {
+            metadata.insert(
+                format!("page[{page_number}]/size"),
+                format!("{}x{}", numbers[2], numbers[3]),
+            );
+        }
+    }
+
+    if page_numbers.is_empty() {
+        return Err("PDF has no pages".to_string());
+    }
+    if pages.iter().all(|text| text.is_empty()) {
+        return Err("PDF has no extractable text".to_string());
+    }
+    Ok(PdfParsed {
+        pages,
+        blocks,
+        metadata,
+    })
+}
+
+fn pdf_info_metadata(document: &lopdf::Document) -> BTreeMap<String, String> {
+    let mut values = BTreeMap::new();
+    if let Ok(info) = document.trailer.get(b"Info") {
+        let dictionary = info
+            .as_reference()
+            .ok()
+            .and_then(|id| document.get_object(id).ok())
+            .and_then(|object| object.as_dict().ok())
+            .or_else(|| info.as_dict().ok());
+        if let Some(dictionary) = dictionary {
+            let keys: [&[u8]; 7] = [
+                b"Title",
+                b"Author",
+                b"Subject",
+                b"Creator",
+                b"Producer",
+                b"CreationDate",
+                b"ModDate",
+            ];
+            for key in keys {
+                if let Ok(value) = dictionary.get(key)
+                    && let Ok(text) = value.as_str()
+                {
+                    values.insert(
+                        format!("info/{}", String::from_utf8_lossy(key)),
+                        decode_pdf_string(text),
+                    );
                 }
-                "Td" => {
-                    if let Some(values) = operation_numbers(&operation.operands, 2) {
-                        x += values[0];
-                        y += values[1];
-                    }
-                }
-                "Tj" | "'" => {
-                    if let Some(text) = operation_text(&operation.operands) {
-                        push_positioned_block(
-                            &mut blocks,
-                            page_number,
-                            &mut block_index,
-                            text,
-                            x,
-                            y,
-                        );
-                    }
-                }
-                "TJ" => {
-                    if let Some(text) = operation_array_text(&operation.operands) {
-                        push_positioned_block(
-                            &mut blocks,
-                            page_number,
-                            &mut block_index,
-                            text,
-                            x,
-                            y,
-                        );
-                    }
-                }
-                _ => {}
             }
         }
     }
-    if blocks.is_empty() {
-        return Err("PDF has no positioned text blocks".to_string());
-    }
-    Ok(blocks)
+    values
 }
 
 fn push_positioned_block(
@@ -485,68 +605,6 @@ fn operation_array_text(operands: &[lopdf::Object]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn pdf_metadata(bytes: &[u8]) -> std::result::Result<BTreeMap<String, String>, String> {
-    let document = lopdf::Document::load_mem(bytes).map_err(|error| error.to_string())?;
-    let mut values = BTreeMap::new();
-    if let Ok(info) = document.trailer.get(b"Info") {
-        let dictionary = info
-            .as_reference()
-            .ok()
-            .and_then(|id| document.get_object(id).ok())
-            .and_then(|object| object.as_dict().ok())
-            .or_else(|| info.as_dict().ok());
-        if let Some(dictionary) = dictionary {
-            let keys: [&[u8]; 7] = [
-                b"Title",
-                b"Author",
-                b"Subject",
-                b"Creator",
-                b"Producer",
-                b"CreationDate",
-                b"ModDate",
-            ];
-            for key in keys {
-                if let Ok(value) = dictionary.get(key)
-                    && let Ok(text) = value.as_str()
-                {
-                    values.insert(
-                        format!("info/{}", String::from_utf8_lossy(key)),
-                        decode_pdf_string(text),
-                    );
-                }
-            }
-        }
-    }
-    for (number, id) in document.get_pages() {
-        let Ok(page) = document.get_object(id).and_then(|object| object.as_dict()) else {
-            continue;
-        };
-        let Some(media_box) = page.get(b"MediaBox").ok().and_then(|object| {
-            if let Ok(id) = object.as_reference() {
-                document
-                    .get_object(id)
-                    .ok()
-                    .and_then(|object| object.as_array().ok())
-            } else {
-                object.as_array().ok()
-            }
-        }) else {
-            continue;
-        };
-        let numbers: Vec<String> = media_box
-            .iter()
-            .filter_map(|value| value.as_float().ok().map(|value| format!("{value:.1}")))
-            .collect();
-        if numbers.len() == 4 {
-            values.insert(
-                format!("page[{number}]/size"),
-                format!("{}x{}", numbers[2], numbers[3]),
-            );
-        }
-    }
-    Ok(values)
-}
-
 pub fn compare_mixed_documents(
     left_kind: crate::model::FileKind,
     left: &[u8],
@@ -591,7 +649,8 @@ fn parse_mixed_side(
 ) -> std::result::Result<MixedDocument, String> {
     match kind {
         crate::model::FileKind::Docx => {
-            let parsed = parse_docx(bytes, max_blocks)?;
+            let package = Package::new(bytes)?;
+            let parsed = parse_docx(&package, max_blocks)?;
             Ok(MixedDocument {
                 blocks: parsed.blocks,
                 tables: parsed.tables,
@@ -600,7 +659,8 @@ fn parse_mixed_side(
             })
         }
         crate::model::FileKind::Odt => {
-            let parsed = parse_odf_document(bytes, "odt", max_blocks)?;
+            let package = Package::new(bytes)?;
+            let parsed = parse_odf_document(&package, "odt", max_blocks)?;
             Ok(MixedDocument {
                 blocks: parsed.blocks,
                 tables: parsed.tables,
@@ -609,15 +669,18 @@ fn parse_mixed_side(
             })
         }
         crate::model::FileKind::Pdf => {
-            let pages = pdf_page_texts(bytes)?;
-            let mut blocks =
-                pdf_positioned_blocks(bytes).unwrap_or_else(|_| pages_to_blocks(&pages));
+            let parsed = parse_pdf(bytes)?;
+            let mut blocks = if parsed.blocks.is_empty() {
+                pages_to_blocks(&parsed.pages)
+            } else {
+                parsed.blocks
+            };
             let truncated = blocks.len() > max_blocks;
             blocks.truncate(max_blocks);
             Ok(MixedDocument {
                 blocks,
                 tables: Vec::new(),
-                metadata: pdf_metadata(bytes).unwrap_or_default(),
+                metadata: parsed.metadata,
                 truncated,
             })
         }
@@ -634,7 +697,8 @@ fn parse_mixed_side(
             })
         }
         crate::model::FileKind::Pptx => {
-            let (slides, truncated) = parse_pptx_slides(bytes, max_blocks)?;
+            let package = Package::new(bytes)?;
+            let (slides, truncated) = parse_pptx_slides(&package, max_blocks)?;
             let mut blocks = Vec::new();
             let mut tables = Vec::new();
             for (index, slide) in slides.iter().enumerate() {
@@ -678,7 +742,8 @@ fn parse_mixed_side(
             })
         }
         crate::model::FileKind::Odp => {
-            let parsed = parse_odf_document(bytes, "odp", max_blocks)?;
+            let package = Package::new(bytes)?;
+            let parsed = parse_odf_document(&package, "odp", max_blocks)?;
             Ok(MixedDocument {
                 blocks: parsed.blocks,
                 tables: parsed.tables,
@@ -700,8 +765,22 @@ pub fn compare_odf_documents(
     max_blocks: usize,
     max_table_rows: usize,
 ) -> std::result::Result<DocumentDiff, String> {
-    let left_doc = parse_odf_document(left, format, max_blocks)?;
-    let right_doc = parse_odf_document(right, format, max_blocks)?;
+    let (left_result, right_result) = rayon::join(
+        || -> std::result::Result<(ParsedOdf, MediaHashes), String> {
+            let package = Package::new(left)?;
+            let parsed = parse_odf_document(&package, format, max_blocks)?;
+            let media = media_hashes(&package, "Pictures/");
+            Ok((parsed, media))
+        },
+        || -> std::result::Result<(ParsedOdf, MediaHashes), String> {
+            let package = Package::new(right)?;
+            let parsed = parse_odf_document(&package, format, max_blocks)?;
+            let media = media_hashes(&package, "Pictures/");
+            Ok((parsed, media))
+        },
+    );
+    let (left_doc, left_media) = left_result?;
+    let (right_doc, right_media) = right_result?;
     Ok(DocumentDiff {
         format: format.to_string(),
         left_pages: None,
@@ -709,7 +788,7 @@ pub fn compare_odf_documents(
         metadata: compare_metadata(&left_doc.metadata, &right_doc.metadata),
         blocks: compare_blocks(&left_doc.blocks, &right_doc.blocks),
         tables: compare_docx_tables(&left_doc.tables, &right_doc.tables, max_table_rows),
-        media: compare_media(left, right, "Pictures/", "image"),
+        media: compare_media_maps(&left_media, &right_media, "image"),
         visual: None,
         truncated: left_doc.truncated || right_doc.truncated,
     })
@@ -723,19 +802,18 @@ struct ParsedOdf {
 }
 
 fn parse_odf_document(
-    bytes: &[u8],
+    package: &Package<'_>,
     format: &str,
     max_blocks: usize,
 ) -> std::result::Result<ParsedOdf, String> {
-    let names = list_zip_names(bytes)?;
-    if !names.iter().any(|name| name == "content.xml") {
+    if !package.contains("content.xml") {
         return Err(format!("{format}: missing content.xml"));
     }
-    let xml = read_zip_entry(bytes, "content.xml")?;
+    let xml = package.read_text("content.xml")?;
     let mut parsed = ParsedOdf {
         blocks: Vec::new(),
         tables: Vec::new(),
-        metadata: odf_metadata(bytes, format),
+        metadata: odf_metadata(package),
         truncated: false,
     };
     parse_odf_content(&xml, format, max_blocks, &mut parsed)?;
@@ -907,15 +985,12 @@ fn parse_odf_content(
     Ok(())
 }
 
-fn odf_metadata(bytes: &[u8], format: &str) -> BTreeMap<String, String> {
-    let value = if format == "odp" {
-        crate::diff::documents_extra::parse_odp(bytes)
-    } else {
-        crate::diff::documents_extra::parse_odt(bytes)
+fn odf_metadata(package: &Package<'_>) -> BTreeMap<String, String> {
+    let Ok(xml) = package.read_text("meta.xml") else {
+        return BTreeMap::new();
     };
-    value
+    crate::diff::documents_extra::metadata_fields(xml.as_bytes())
         .ok()
-        .and_then(|value| value.get("metadata").cloned())
         .and_then(|value| value.as_object().cloned())
         .map(|object| {
             object
@@ -1004,30 +1079,15 @@ fn decode_pdf_string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).to_string()
 }
 
-fn pdf_page_texts(bytes: &[u8]) -> std::result::Result<Vec<String>, String> {
-    let document = lopdf::Document::load_mem(bytes).map_err(|error| error.to_string())?;
-    let pages: Vec<u32> = document.get_pages().keys().copied().collect();
-    if pages.is_empty() {
-        return Err("PDF has no pages".to_string());
-    }
-    let mut texts = Vec::with_capacity(pages.len());
-    for page in pages {
-        let mut text = String::new();
-        for chunk in document.extract_text_chunks(&[page]).into_iter().flatten() {
-            text.push_str(&chunk);
-        }
-        texts.push(normalize_text(text));
-    }
-    if texts.iter().all(|text| text.is_empty()) {
-        return Err("PDF has no extractable text".to_string());
-    }
-    Ok(texts)
+fn ofd_page_texts(bytes: &[u8]) -> std::result::Result<Vec<String>, String> {
+    let package = Package::new(bytes)?;
+    ofd_page_texts_package(&package)
 }
 
-fn ofd_page_texts(bytes: &[u8]) -> std::result::Result<Vec<String>, String> {
-    let names = list_zip_names(bytes)?;
-    let mut pages: Vec<String> = names
-        .into_iter()
+fn ofd_page_texts_package(package: &Package<'_>) -> std::result::Result<Vec<String>, String> {
+    let mut pages: Vec<&String> = package
+        .names
+        .iter()
         .filter(|name| name.contains("/Pages/") && name.ends_with(".xml"))
         .collect();
     pages.sort();
@@ -1036,7 +1096,7 @@ fn ofd_page_texts(bytes: &[u8]) -> std::result::Result<Vec<String>, String> {
     }
     let mut texts = Vec::with_capacity(pages.len());
     for name in pages {
-        let xml = read_zip_entry(bytes, &name)?;
+        let xml = package.read_text(name)?;
         texts.push(normalize_text(extract_ofd_xml(&xml)?));
     }
     if texts.iter().all(|text| text.is_empty()) {
@@ -1082,11 +1142,25 @@ pub fn compare_docx_documents(
     max_blocks: usize,
     max_table_rows: usize,
 ) -> std::result::Result<DocumentDiff, String> {
-    let left_doc = parse_docx(left, max_blocks)?;
-    let right_doc = parse_docx(right, max_blocks)?;
+    let (left_result, right_result) = rayon::join(
+        || -> std::result::Result<(ParsedDocx, MediaHashes), String> {
+            let package = Package::new(left)?;
+            let parsed = parse_docx(&package, max_blocks)?;
+            let media = media_hashes(&package, "word/media/");
+            Ok((parsed, media))
+        },
+        || -> std::result::Result<(ParsedDocx, MediaHashes), String> {
+            let package = Package::new(right)?;
+            let parsed = parse_docx(&package, max_blocks)?;
+            let media = media_hashes(&package, "word/media/");
+            Ok((parsed, media))
+        },
+    );
+    let (left_doc, left_media) = left_result?;
+    let (right_doc, right_media) = right_result?;
     let blocks = compare_blocks(&left_doc.blocks, &right_doc.blocks);
     let tables = compare_docx_tables(&left_doc.tables, &right_doc.tables, max_table_rows);
-    let media = compare_media(left, right, "word/media/", "image");
+    let media = compare_media_maps(&left_media, &right_media, "image");
     Ok(DocumentDiff {
         format: "docx".to_string(),
         left_pages: None,
@@ -1100,13 +1174,12 @@ pub fn compare_docx_documents(
     })
 }
 
-fn parse_docx(bytes: &[u8], max_blocks: usize) -> std::result::Result<ParsedDocx, String> {
-    let names = list_zip_names(bytes)?;
-    if !names.iter().any(|name| name == "word/document.xml") {
+fn parse_docx(package: &Package<'_>, max_blocks: usize) -> std::result::Result<ParsedDocx, String> {
+    if !package.contains("word/document.xml") {
         return Err("DOCX has no word/document.xml".to_string());
     }
     let mut parsed = ParsedDocx::default();
-    let xml = read_zip_entry(bytes, "word/document.xml")?;
+    let xml = package.read_text("word/document.xml")?;
     let part = parse_word_part(&xml, "body", max_blocks)?;
     parsed.blocks.extend(part.blocks);
     parsed.tables.extend(part.tables);
@@ -1114,7 +1187,7 @@ fn parse_docx(bytes: &[u8], max_blocks: usize) -> std::result::Result<ParsedDocx
 
     let mut parts: Vec<(String, String)> = Vec::new();
     for (prefix, label) in [("word/header", "header"), ("word/footer", "footer")] {
-        let mut numbered = numbered_parts(&names, prefix, ".xml");
+        let mut numbered = numbered_parts(&package.names, prefix, ".xml");
         numbered.sort_by_key(|(number, _)| *number);
         for (position, (_, name)) in numbered.into_iter().enumerate() {
             parts.push((name, format!("{label}[{}]", position + 1)));
@@ -1125,7 +1198,7 @@ fn parse_docx(bytes: &[u8], max_blocks: usize) -> std::result::Result<ParsedDocx
         ("word/endnotes.xml", "endnote"),
         ("word/comments.xml", "comment"),
     ] {
-        if names.iter().any(|candidate| candidate == name) {
+        if package.contains(name) {
             parts.push((name.to_string(), label.to_string()));
         }
     }
@@ -1134,7 +1207,7 @@ fn parse_docx(bytes: &[u8], max_blocks: usize) -> std::result::Result<ParsedDocx
         if parsed.truncated {
             break;
         }
-        let xml = read_zip_entry(bytes, &name)?;
+        let xml = package.read_text(&name)?;
         let remaining = max_blocks.saturating_sub(parsed.blocks.len());
         let part = parse_word_part(&xml, &prefix, remaining)?;
         parsed.blocks.extend(part.blocks);
@@ -1720,33 +1793,23 @@ fn rows_to_csv(rows: &[Vec<String>]) -> Vec<u8> {
     writer.into_inner().unwrap_or_default()
 }
 
-fn read_zip_bytes(bytes: &[u8], name: &str) -> std::result::Result<Vec<u8>, String> {
-    let mut archive =
-        ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| error.to_string())?;
-    let mut entry = archive.by_name(name).map_err(|error| error.to_string())?;
-    let mut data = Vec::new();
-    entry
-        .read_to_end(&mut data)
-        .map_err(|error| error.to_string())?;
-    Ok(data)
+fn media_hashes(package: &Package<'_>, prefix: &str) -> MediaHashes {
+    package
+        .names
+        .iter()
+        .filter(|name| name.starts_with(prefix))
+        .filter_map(|name| {
+            let data = package.read(name).ok()?;
+            Some((name.clone(), (hex_digest(&data), data.len() as u64)))
+        })
+        .collect()
 }
 
-fn compare_media(left: &[u8], right: &[u8], prefix: &str, kind: &str) -> Vec<MediaChange> {
-    let collect = |bytes: &[u8]| -> BTreeMap<String, (String, u64)> {
-        let Ok(names) = list_zip_names(bytes) else {
-            return BTreeMap::new();
-        };
-        names
-            .into_iter()
-            .filter(|name| name.starts_with(prefix))
-            .filter_map(|name| {
-                let data = read_zip_bytes(bytes, &name).ok()?;
-                Some((name, (hex_digest(&data), data.len() as u64)))
-            })
-            .collect()
-    };
-    let left_media = collect(left);
-    let right_media = collect(right);
+fn compare_media_maps(
+    left_media: &MediaHashes,
+    right_media: &MediaHashes,
+    kind: &str,
+) -> Vec<MediaChange> {
     let names: BTreeSet<&String> = left_media.keys().chain(right_media.keys()).collect();
     let mut changes = Vec::new();
     for name in names {
@@ -1807,8 +1870,18 @@ pub fn compare_pptx_documents(
     max_slides: usize,
     max_table_rows: usize,
 ) -> std::result::Result<PresentationDiff, String> {
-    let (left_slides, left_truncated) = parse_pptx_slides(left, max_slides)?;
-    let (right_slides, right_truncated) = parse_pptx_slides(right, max_slides)?;
+    let (left_result, right_result) = rayon::join(
+        || {
+            let package = Package::new(left)?;
+            parse_pptx_slides(&package, max_slides)
+        },
+        || {
+            let package = Package::new(right)?;
+            parse_pptx_slides(&package, max_slides)
+        },
+    );
+    let (left_slides, left_truncated) = left_result?;
+    let (right_slides, right_truncated) = right_result?;
     let left_keys: Vec<String> = left_slides.iter().map(slide_fingerprint).collect();
     let right_keys: Vec<String> = right_slides.iter().map(slide_fingerprint).collect();
     let (left_match, right_match, moved) = align_keys(&left_keys, &right_keys);
@@ -1936,17 +2009,16 @@ pub fn compare_pptx_documents(
 }
 
 fn parse_pptx_slides(
-    bytes: &[u8],
+    package: &Package<'_>,
     max_slides: usize,
 ) -> std::result::Result<(Vec<ParsedSlide>, bool), String> {
-    let names = list_zip_names(bytes)?;
-    let order = slide_part_order(bytes, &names)?;
+    let order = slide_part_order(package)?;
     let truncated = order.len() > max_slides;
     let mut slides = Vec::new();
     for (index, (part, hidden)) in order.iter().take(max_slides).enumerate() {
-        let xml = read_zip_entry(bytes, part)?;
+        let xml = package.read_text(part)?;
         let mut shapes = parse_slide_shapes(&xml)?;
-        let rels = slide_relationships(bytes, part)?;
+        let rels = slide_relationships(package, part)?;
         let base = part
             .rsplit_once('/')
             .map(|(dir, _)| dir)
@@ -1956,18 +2028,18 @@ fn parse_pptx_slides(
                 && let Some(target) = rels.get(media)
             {
                 let target = resolve_part_path(base, target);
-                if let Ok(data) = read_zip_bytes(bytes, &target) {
+                if let Ok(data) = package.read(&target) {
                     shape.media_sha256 = Some(hex_digest(&data));
                     shape.media_size = Some(data.len() as u64);
                 }
                 shape.media = Some(target);
             }
         }
-        let notes = slide_notes_part(bytes, part, &names)?
-            .and_then(|notes_part| read_zip_entry(bytes, &notes_part).ok())
+        let notes = slide_notes_part(package, part)?
+            .and_then(|notes_part| package.read_text(&notes_part).ok())
             .and_then(|xml| extract_slide_text(&xml).ok())
             .filter(|notes| !notes.trim().is_empty());
-        let layout = slide_layout_part(bytes, part, &names)?;
+        let layout = slide_layout_part(package, part)?;
         let title = shapes
             .iter()
             .find(|shape| shape.kind == "title" && !shape.text.trim().is_empty())
@@ -1991,12 +2063,12 @@ fn parse_pptx_slides(
 }
 
 fn slide_relationships(
-    bytes: &[u8],
+    package: &Package<'_>,
     slide: &str,
 ) -> std::result::Result<BTreeMap<String, String>, String> {
     let file = slide.rsplit('/').next().unwrap_or(slide);
     let rels_name = format!("ppt/slides/_rels/{file}.rels");
-    let xml = match read_zip_entry(bytes, &rels_name) {
+    let xml = match package.read_text(&rels_name) {
         Ok(xml) => xml,
         Err(_) => return Ok(BTreeMap::new()),
     };
@@ -2008,19 +2080,18 @@ fn slide_relationships(
 }
 
 fn slide_layout_part(
-    bytes: &[u8],
+    package: &Package<'_>,
     slide: &str,
-    names: &[String],
 ) -> std::result::Result<Option<String>, String> {
     let file = slide.rsplit('/').next().unwrap_or(slide);
     let rels_name = format!("ppt/slides/_rels/{file}.rels");
-    let Ok(xml) = read_zip_entry(bytes, &rels_name) else {
+    let Ok(xml) = package.read_text(&rels_name) else {
         return Ok(None);
     };
     for (_, kind, target) in relationships(&xml)? {
         if kind.ends_with("/slideLayout") {
             let target = resolve_part_path("ppt/slides", &target);
-            if names.iter().any(|name| name == &target) {
+            if package.contains(&target) {
                 return Ok(Some(target));
             }
         }
@@ -2606,28 +2677,6 @@ fn extract_slide_text(xml: &str) -> std::result::Result<String, String> {
     }
 
     Ok(out.trim().to_string())
-}
-
-fn read_zip_entry(bytes: &[u8], name: &str) -> std::result::Result<String, String> {
-    let mut archive =
-        ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| error.to_string())?;
-    let mut entry = archive.by_name(name).map_err(|error| error.to_string())?;
-    let mut xml = String::new();
-    entry
-        .read_to_string(&mut xml)
-        .map_err(|error| error.to_string())?;
-    Ok(xml)
-}
-
-fn list_zip_names(bytes: &[u8]) -> std::result::Result<Vec<String>, String> {
-    let mut archive =
-        ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| error.to_string())?;
-    let mut names = Vec::with_capacity(archive.len());
-    for index in 0..archive.len() {
-        let entry = archive.by_index(index).map_err(|error| error.to_string())?;
-        names.push(entry.name().to_string());
-    }
-    Ok(names)
 }
 
 fn first_line(text: &str) -> String {
