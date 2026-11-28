@@ -10,23 +10,23 @@
 
 The 1.3.0 work implements the M0–M4 engine performance and intelligence plan:
 
-- M0: reproducible synthetic corpus and best-of-three wall-time / peak-RSS runner (`.private/bench/`) with results in [PERFORMANCE.md](PERFORMANCE.md).
-- M1: one PDF parse per side, one reusable `Package` per Office/OpenDocument side, parallel left/right document and workbook parsing, text common-prefix/suffix trimming with patience for large middles, structured equal-subtree short-circuiting, archive size pre-checks and early hunk stopping.
+- M0: reproducible synthetic corpus and best-of-five wall-time / peak-RSS / read-byte / expanded-byte runner (`.private/bench/`), plus a counting-allocator harness; results are in [PERFORMANCE.md](PERFORMANCE.md).
+- M1: one PDF parse per side with each page content stream decoded once for text and blocks; one reusable `Package` per Office/OpenDocument side with streamed media hashing; parallel left/right document and workbook parsing; text common-prefix/suffix trimming with patience for large middles; structured equal-subtree short-circuiting; archive size pre-checks and early hunk stopping. Measured: PDF 9.29×, multipart DOCX 4.02×, multipart ODT 3.61× (targets ≥2× / ≥1.5×).
 - M2: unmatched directory and archive entries are paired by `(size, SHA-256)` and reported as `renamed_from`; JSON, ANSI, HTML, Markdown, unified and `--name-only` render the previous path; completeness and exit codes are unchanged.
 - M3: text patience/unique-anchor mode, word-highlight threshold, structured array edge trimming and stable 128-bit fingerprints, CSV/TSV implicit unique key with warning, worksheet moved row/column detection with formula-normalised signatures.
-- M4: ZIP comparison scans the central directory once, reads entries on demand, and materialises changed pairs in bounded 32 MiB batches instead of holding both sides' full maps.
+- M4: streaming ZIP, uncompressed TAR, CPIO and AR/DEB comparisons scan metadata once and read payloads on demand; ZIP changed pairs are materialised in bounded 32 MiB batches; Office media hashing reuses one 64 KiB buffer. 10k-entry ZIP peak RSS −89%; TAR −48%. 7z, RPM, CAB, ISO and XAR still materialise entries.
 
 Verification performed locally:
 
 ```text
 cargo fmt --all                                      passed
 cargo clippy --workspace --all-targets -- -D warnings passed
-cargo test --workspace                               passed: 12 + 79 + 177 + 123 = 391 tests
+cargo test --workspace                               passed: 12 + 79 + 178 + 125 = 394 tests
 cargo build --release                                passed
 scripts/smoke-test.ps1 (release binary)              passed: 189 passed, 0 failed
 ```
 
-Benchmark highlights versus the published 1.2.0 binary: 49 MB near-identical text 10.05× faster with 47% lower peak RSS, 1000-page PDF 1.85× faster, PPTX 2.09× faster, XLSX 1.46× faster, 10k-entry ZIP 1.19× faster with 72% lower peak RSS, 50k-record JSON 1.65× faster. DOCX is at parity and the 10k directory case is within noise; both are dominated by scan/startup costs. Full numbers and trade-offs are in [PERFORMANCE.md](PERFORMANCE.md). No release tag or published artifact was created for 1.3.0 in this step.
+Benchmark highlights versus the published 1.2.0 binary: 49 MB near-identical text 8.67× faster with 47% lower peak RSS and 99.99% fewer allocations; 1000-page PDF 9.29× faster; multipart DOCX 4.02×; multipart ODT 3.61×; PPTX 2.37×; XLSX 1.57×; 10k-entry ZIP 1.66× faster with 89% lower peak RSS; 10k-entry TAR 1.36× faster with 48% lower peak RSS. The 10k directory case is within noise because rename hashing trades a small amount of work for a smarter report. Full numbers, read/expanded bytes and allocation counts are in [PERFORMANCE.md](PERFORMANCE.md). No release tag or published artifact was created for 1.3.0 in this step.
 
 ## Release Verification (v1.2.0 - Toyger)
 

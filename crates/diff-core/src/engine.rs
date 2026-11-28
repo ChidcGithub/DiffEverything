@@ -144,7 +144,7 @@ struct ZipEntryMeta {
 }
 
 #[derive(Debug, Clone)]
-struct ZipStamp {
+struct EntryStamp {
     hash: String,
     size: u64,
     kind: FileKind,
@@ -157,10 +157,40 @@ struct ZipStream<'a> {
     archive: Mutex<ZipArchive<std::io::Cursor<&'a [u8]>>>,
     entries: BTreeMap<String, ZipEntryMeta>,
     charged: Mutex<BTreeSet<String>>,
-    stamps: Mutex<BTreeMap<String, ZipStamp>>,
+    stamps: Mutex<BTreeMap<String, EntryStamp>>,
     stopped: AtomicBool,
     max_file_bytes: u64,
     label: String,
+}
+
+trait StreamEntries {
+    fn names(&self) -> Vec<&str>;
+    fn contains(&self, name: &str) -> bool;
+    fn size(&self, name: &str) -> Option<u64>;
+    fn read(&self, name: &str, ctx: &mut Ctx) -> Result<Option<Vec<u8>>>;
+    fn stamp(&self, name: &str, ctx: &mut Ctx) -> Result<Option<EntryStamp>>;
+}
+
+impl StreamEntries for ZipStream<'_> {
+    fn names(&self) -> Vec<&str> {
+        self.entries.keys().map(String::as_str).collect()
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.entries.contains_key(name)
+    }
+
+    fn size(&self, name: &str) -> Option<u64> {
+        self.entries.get(name).map(|meta| meta.size)
+    }
+
+    fn read(&self, name: &str, ctx: &mut Ctx) -> Result<Option<Vec<u8>>> {
+        ZipStream::read(self, name, ctx)
+    }
+
+    fn stamp(&self, name: &str, ctx: &mut Ctx) -> Result<Option<EntryStamp>> {
+        ZipStream::stamp(self, name, ctx)
+    }
 }
 
 impl ZipStream<'_> {
@@ -236,7 +266,7 @@ impl ZipStream<'_> {
         Ok(Some(data))
     }
 
-    fn stamp(&self, name: &str, ctx: &mut Ctx) -> Result<Option<ZipStamp>> {
+    fn stamp(&self, name: &str, ctx: &mut Ctx) -> Result<Option<EntryStamp>> {
         if let Some(stamp) = self
             .stamps
             .lock()
@@ -249,7 +279,7 @@ impl ZipStream<'_> {
         let Some(data) = self.read(name, ctx)? else {
             return Ok(None);
         };
-        let stamp = ZipStamp {
+        let stamp = EntryStamp {
             hash: hex_bytes(&Sha256::digest(&data)),
             size: data.len() as u64,
             kind: detect_bytes(name, &data),
@@ -259,6 +289,128 @@ impl ZipStream<'_> {
             .expect("zip stamp map poisoned")
             .insert(name.to_string(), stamp.clone());
         Ok(Some(stamp))
+    }
+}
+
+#[derive(Debug, Clone)]
+enum SliceData {
+    Range(usize, usize),
+    Owned(Vec<u8>),
+}
+
+#[derive(Debug, Clone)]
+struct SliceEntryMeta {
+    data: SliceData,
+    size: u64,
+}
+
+/// Streaming reader for uncompressed TAR and other seekable archives. The
+/// catalog scan records each payload's byte range; payload bytes are sliced on
+/// demand instead of being copied into a map for both sides. Compressed TAR
+/// streams keep the materialising reader because seeking inside a compressed
+/// stream is not generally possible.
+struct SliceStream<'a> {
+    bytes: &'a [u8],
+    entries: BTreeMap<String, SliceEntryMeta>,
+    charged: Mutex<BTreeSet<String>>,
+    stamps: Mutex<BTreeMap<String, EntryStamp>>,
+    stopped: AtomicBool,
+    max_file_bytes: u64,
+    label: String,
+}
+
+impl SliceStream<'_> {
+    fn read(&self, name: &str, ctx: &mut Ctx) -> Result<Option<Vec<u8>>> {
+        if self.stopped.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let Some(meta) = self.entries.get(name) else {
+            return Ok(None);
+        };
+        let data = match &meta.data {
+            SliceData::Owned(data) => data.clone(),
+            SliceData::Range(offset, size) => {
+                let end = offset.checked_add(*size).ok_or_else(|| {
+                    DiffError::Invalid(format!("archive entry {name}: payload offset overflow"))
+                })?;
+                let Some(data) = self.bytes.get(*offset..end) else {
+                    return Err(DiffError::Invalid(format!(
+                        "archive entry {name}: payload exceeds archive size"
+                    )));
+                };
+                data.to_vec()
+            }
+        };
+        if data.len() as u64 > self.max_file_bytes {
+            ctx.warn(format!(
+                "{}: archive entry {name} exceeds the detailed-diff limit",
+                display_label(&self.label)
+            ));
+            ctx.omit();
+            return Ok(None);
+        }
+        let already_charged = {
+            let charged = self.charged.lock().expect("tar charge set poisoned");
+            charged.contains(name)
+        };
+        if !already_charged {
+            if !ctx.charge_expanded(&self.label, data.len()) {
+                self.stopped.store(true, Ordering::Relaxed);
+                return Ok(None);
+            }
+            self.charged
+                .lock()
+                .expect("tar charge set poisoned")
+                .insert(name.to_string());
+        }
+        Ok(Some(data))
+    }
+
+    fn stamp(&self, name: &str, ctx: &mut Ctx) -> Result<Option<EntryStamp>> {
+        if let Some(stamp) = self
+            .stamps
+            .lock()
+            .expect("tar stamp map poisoned")
+            .get(name)
+            .cloned()
+        {
+            return Ok(Some(stamp));
+        }
+        let Some(data) = self.read(name, ctx)? else {
+            return Ok(None);
+        };
+        let stamp = EntryStamp {
+            hash: hex_bytes(&Sha256::digest(&data)),
+            size: data.len() as u64,
+            kind: detect_bytes(name, &data),
+        };
+        self.stamps
+            .lock()
+            .expect("tar stamp map poisoned")
+            .insert(name.to_string(), stamp.clone());
+        Ok(Some(stamp))
+    }
+}
+
+impl StreamEntries for SliceStream<'_> {
+    fn names(&self) -> Vec<&str> {
+        self.entries.keys().map(String::as_str).collect()
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.entries.contains_key(name)
+    }
+
+    fn size(&self, name: &str) -> Option<u64> {
+        self.entries.get(name).map(|meta| meta.size)
+    }
+
+    fn read(&self, name: &str, ctx: &mut Ctx) -> Result<Option<Vec<u8>>> {
+        SliceStream::read(self, name, ctx)
+    }
+
+    fn stamp(&self, name: &str, ctx: &mut Ctx) -> Result<Option<EntryStamp>> {
+        SliceStream::stamp(self, name, ctx)
     }
 }
 
@@ -2324,7 +2476,7 @@ impl DiffEngine {
     ) -> Result<DiffNode> {
         let left_stream = self.open_zip_stream(left, label, ctx)?;
         let right_stream = self.open_zip_stream(right, label, ctx)?;
-        self.compare_zip_streams(label, &left_stream, &right_stream, depth, ctx)
+        self.compare_stream_entries(label, &left_stream, &right_stream, "zip", depth, ctx)
     }
 
     fn open_zip_stream<'a>(
@@ -2394,10 +2546,10 @@ impl DiffEngine {
         })
     }
 
-    fn detect_zip_renames(
+    fn detect_stream_renames<S: StreamEntries>(
         &self,
-        left: &ZipStream<'_>,
-        right: &ZipStream<'_>,
+        left: &S,
+        right: &S,
         left_only: &[String],
         right_only: &[String],
         ctx: &mut Ctx,
@@ -2407,18 +2559,18 @@ impl DiffEngine {
         }
         let mut right_by_size: BTreeMap<u64, Vec<&String>> = BTreeMap::new();
         for key in right_only {
-            if let Some(meta) = right.entries.get(key) {
-                right_by_size.entry(meta.size).or_default().push(key);
+            if let Some(size) = right.size(key) {
+                right_by_size.entry(size).or_default().push(key);
             }
         }
         let mut buckets: BTreeMap<u64, BTreeMap<String, VecDeque<String>>> = BTreeMap::new();
         let mut loaded = BTreeSet::new();
         let mut pairs = BTreeMap::new();
         for left_key in left_only {
-            let Some(left_meta) = left.entries.get(left_key) else {
+            let Some(left_size) = left.size(left_key) else {
                 continue;
             };
-            let Some(_) = right_by_size.get(&left_meta.size) else {
+            let Some(_) = right_by_size.get(&left_size) else {
                 continue;
             };
             let Some(left_stamp) = left.stamp(left_key, ctx)? else {
@@ -2453,34 +2605,35 @@ impl DiffEngine {
         Ok(pairs)
     }
 
-    fn compare_zip_streams(
+    fn compare_stream_entries<S: StreamEntries>(
         &self,
         label: &str,
-        left: &ZipStream<'_>,
-        right: &ZipStream<'_>,
+        left: &S,
+        right: &S,
+        format: &str,
         depth: usize,
         ctx: &mut Ctx,
     ) -> Result<DiffNode> {
         let left_only: Vec<String> = left
-            .entries
-            .keys()
-            .filter(|key| !right.entries.contains_key(*key))
-            .cloned()
+            .names()
+            .into_iter()
+            .filter(|key| !right.contains(key))
+            .map(str::to_string)
             .collect();
         let right_only: Vec<String> = right
-            .entries
-            .keys()
-            .filter(|key| !left.entries.contains_key(*key))
-            .cloned()
+            .names()
+            .into_iter()
+            .filter(|key| !left.contains(key))
+            .map(str::to_string)
             .collect();
-        let renames = self.detect_zip_renames(left, right, &left_only, &right_only, ctx)?;
+        let renames = self.detect_stream_renames(left, right, &left_only, &right_only, ctx)?;
         let renamed_right: BTreeSet<String> = renames.values().cloned().collect();
         let mut keys: Vec<String> = left
-            .entries
-            .keys()
-            .chain(right.entries.keys())
+            .names()
+            .into_iter()
+            .chain(right.names())
             .filter(|key| !renamed_right.contains(*key))
-            .cloned()
+            .map(str::to_string)
             .collect();
         keys.sort();
         keys.dedup();
@@ -2507,15 +2660,15 @@ impl DiffEngine {
         let mut pending: Vec<String> = Vec::new();
         for key in &keys {
             let right_key = renames.get(key).map(String::as_str).unwrap_or(key.as_str());
-            let left_meta = left.entries.get(key);
-            let right_meta = right.entries.get(right_key);
-            match (left_meta, right_meta) {
-                (Some(left_meta), Some(right_meta)) => {
+            let left_size = left.size(key);
+            let right_size = right.size(right_key);
+            match (left_size, right_size) {
+                (Some(left_size), Some(right_size)) => {
                     // The central directory already tells us the unpacked
                     // sizes. Different sizes cannot be equal, so skip the
                     // first read and materialise them only for the detailed
                     // comparison below.
-                    if left_meta.size != right_meta.size {
+                    if left_size != right_size {
                         pending.push(key.clone());
                         continue;
                     }
@@ -2684,7 +2837,7 @@ impl DiffEngine {
             label,
             entries_status(&entries),
             DiffBody::Archive(ArchiveDiff {
-                format: "zip".to_string(),
+                format: format.to_string(),
                 entries,
                 total_entries,
                 truncated,
@@ -3246,17 +3399,17 @@ impl DiffEngine {
         depth: usize,
         ctx: &mut Ctx,
     ) -> Result<DiffNode> {
-        let left_entries = self.read_cpio_entries(left, label, ctx)?;
-        let right_entries = self.read_cpio_entries(right, label, ctx)?;
-        self.compare_archive_entries(label, &left_entries, &right_entries, "cpio", depth, ctx)
+        let left_stream = self.open_cpio_stream(left, label, ctx)?;
+        let right_stream = self.open_cpio_stream(right, label, ctx)?;
+        self.compare_stream_entries(label, &left_stream, &right_stream, "cpio", depth, ctx)
     }
 
-    fn read_cpio_entries(
+    fn open_cpio_stream<'a>(
         &self,
-        bytes: &[u8],
+        bytes: &'a [u8],
         label: &str,
         ctx: &mut Ctx,
-    ) -> Result<BTreeMap<String, Vec<u8>>> {
+    ) -> Result<SliceStream<'a>> {
         let mut entries = BTreeMap::new();
         let mut offset = 0usize;
         while offset + 110 <= bytes.len() {
@@ -3294,7 +3447,7 @@ impl DiffEngine {
             if filesize > bytes.len().saturating_sub(offset) {
                 return Err(DiffError::Invalid("cpio: truncated entry data".into()));
             }
-            let data = &bytes[offset..offset + filesize];
+            let data_offset = offset;
             offset = (offset + filesize + 3) & !3;
             if mode & 0o170000 != 0o100000 {
                 continue;
@@ -3308,7 +3461,7 @@ impl DiffEngine {
                 ctx.omit();
                 break;
             }
-            if data.len() as u64 > self.options.max_file_bytes {
+            if filesize as u64 > self.options.max_file_bytes {
                 ctx.warn(format!(
                     "{}: archive entry {name} is larger than the detailed-diff limit",
                     display_label(label)
@@ -3316,12 +3469,23 @@ impl DiffEngine {
                 ctx.omit();
                 continue;
             }
-            if !ctx.charge_expanded(label, data.len()) {
-                break;
-            }
-            entries.insert(name, data.to_vec());
+            entries.insert(
+                name,
+                SliceEntryMeta {
+                    data: SliceData::Range(data_offset, filesize),
+                    size: filesize as u64,
+                },
+            );
         }
-        Ok(entries)
+        Ok(SliceStream {
+            bytes,
+            entries,
+            charged: Mutex::new(BTreeSet::new()),
+            stamps: Mutex::new(BTreeMap::new()),
+            stopped: AtomicBool::new(false),
+            max_file_bytes: self.options.max_file_bytes,
+            label: label.to_string(),
+        })
     }
 
     fn compare_iso_bytes(
@@ -3439,9 +3603,9 @@ impl DiffEngine {
         depth: usize,
         ctx: &mut Ctx,
     ) -> Result<DiffNode> {
-        let left_entries = self.read_ar_entries(left, label, ctx)?;
-        let right_entries = self.read_ar_entries(right, label, ctx)?;
-        self.compare_archive_entries(label, &left_entries, &right_entries, "deb", depth, ctx)
+        let left_stream = self.open_ar_stream(left, label, ctx)?;
+        let right_stream = self.open_ar_stream(right, label, ctx)?;
+        self.compare_stream_entries(label, &left_stream, &right_stream, "deb", depth, ctx)
     }
 
     fn compare_ar_bytes(
@@ -3452,21 +3616,21 @@ impl DiffEngine {
         depth: usize,
         ctx: &mut Ctx,
     ) -> Result<DiffNode> {
-        let left_entries = self.read_ar_entries(left, label, ctx)?;
-        let right_entries = self.read_ar_entries(right, label, ctx)?;
-        self.compare_archive_entries(label, &left_entries, &right_entries, "ar", depth, ctx)
+        let left_stream = self.open_ar_stream(left, label, ctx)?;
+        let right_stream = self.open_ar_stream(right, label, ctx)?;
+        self.compare_stream_entries(label, &left_stream, &right_stream, "ar", depth, ctx)
     }
 
-    fn read_ar_entries(
+    fn open_ar_stream<'a>(
         &self,
-        bytes: &[u8],
+        bytes: &'a [u8],
         label: &str,
         ctx: &mut Ctx,
-    ) -> Result<BTreeMap<String, Vec<u8>>> {
+    ) -> Result<SliceStream<'a>> {
         const MAGIC: &[u8] = b"!<arch>\n";
         const HEADER_LEN: usize = 60;
         if !bytes.starts_with(MAGIC) {
-            return Err(DiffError::Invalid("ar: missing archive magic".into()));
+            return Err(DiffError::Invalid("ar: invalid magic".into()));
         }
 
         let mut entries = BTreeMap::new();
@@ -3491,6 +3655,7 @@ impl DiffEngine {
             if size > bytes.len() - offset {
                 return Err(DiffError::Invalid("ar: member exceeds file size".into()));
             }
+            let data_offset = offset;
             let data = &bytes[offset..offset + size];
             offset += size + (size & 1);
 
@@ -3520,7 +3685,7 @@ impl DiffEngine {
             } else {
                 raw_name.trim_end_matches('/').to_string()
             };
-            let (name, data) = if let Some(length) = raw_name
+            let (name, data_offset, data_len) = if let Some(length) = raw_name
                 .strip_prefix("#1/")
                 .and_then(|rest| rest.trim().parse::<usize>().ok())
             {
@@ -3532,9 +3697,9 @@ impl DiffEngine {
                 let name = String::from_utf8_lossy(&data[..length])
                     .trim_end_matches('\0')
                     .to_string();
-                (name, &data[length..])
+                (name, data_offset + length, data.len() - length)
             } else {
-                (name, data)
+                (name, data_offset, data.len())
             };
             if name.is_empty() || name == "/" || name.starts_with("__.SYMDEF") {
                 continue;
@@ -3548,7 +3713,7 @@ impl DiffEngine {
                 ctx.omit();
                 break;
             }
-            if data.len() as u64 > self.options.max_file_bytes {
+            if data_len as u64 > self.options.max_file_bytes {
                 ctx.warn(format!(
                     "{}: archive entry {name} is larger than the detailed-diff limit",
                     display_label(label)
@@ -3556,12 +3721,23 @@ impl DiffEngine {
                 ctx.omit();
                 continue;
             }
-            if !ctx.charge_expanded(label, data.len()) {
-                break;
-            }
-            entries.insert(name, data.to_vec());
+            entries.insert(
+                name,
+                SliceEntryMeta {
+                    data: SliceData::Range(data_offset, data_len),
+                    size: data_len as u64,
+                },
+            );
         }
-        Ok(entries)
+        Ok(SliceStream {
+            bytes,
+            entries,
+            charged: Mutex::new(BTreeSet::new()),
+            stamps: Mutex::new(BTreeMap::new()),
+            stopped: AtomicBool::new(false),
+            max_file_bytes: self.options.max_file_bytes,
+            label: label.to_string(),
+        })
     }
 
     fn compare_tar_bytes(
@@ -3572,8 +3748,6 @@ impl DiffEngine {
         depth: usize,
         ctx: &mut Ctx,
     ) -> Result<DiffNode> {
-        let left_entries = self.read_tar_entries(left, label, ctx)?;
-        let right_entries = self.read_tar_entries(right, label, ctx)?;
         let format = if left.starts_with(&[0x1f, 0x8b]) {
             "tar.gz"
         } else if left.starts_with(b"BZh") {
@@ -3587,7 +3761,161 @@ impl DiffEngine {
         } else {
             "tar"
         };
+        let right_is_compressed = right.starts_with(&[0x1f, 0x8b])
+            || right.starts_with(b"BZh")
+            || right.starts_with(&[0xFD, b'7', b'z', b'X', b'Z', 0])
+            || right.starts_with(&[0x28, 0xB5, 0x2F, 0xFD])
+            || right.starts_with(&[0x04, 0x22, 0x4D, 0x18]);
+        if format == "tar" && !right_is_compressed {
+            let left_stream = self.open_tar_stream(left, label, ctx)?;
+            let right_stream = self.open_tar_stream(right, label, ctx)?;
+            return self.compare_stream_entries(
+                label,
+                &left_stream,
+                &right_stream,
+                format,
+                depth,
+                ctx,
+            );
+        }
+        let left_entries = self.read_tar_entries(left, label, ctx)?;
+        let right_entries = self.read_tar_entries(right, label, ctx)?;
         self.compare_archive_entries(label, &left_entries, &right_entries, format, depth, ctx)
+    }
+
+    fn open_tar_stream<'a>(
+        &self,
+        bytes: &'a [u8],
+        label: &str,
+        ctx: &mut Ctx,
+    ) -> Result<SliceStream<'a>> {
+        let mut archive = tar::Archive::new(std::io::Cursor::new(bytes));
+        let mut entries = BTreeMap::new();
+        let mut count = 0usize;
+        for entry in archive.entries()? {
+            let mut entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    ctx.warn(format!(
+                        "{}: cannot read tar entry: {error}",
+                        display_label(label)
+                    ));
+                    continue;
+                }
+            };
+            let entry_type = entry.header().entry_type();
+            if !entry_type.is_file() && !entry_type.is_symlink() && !entry_type.is_hard_link() {
+                continue;
+            }
+            if count >= self.options.max_zip_entries {
+                ctx.warn(format!(
+                    "{}: archive entry limit ({}) reached; some entries were skipped",
+                    display_label(label),
+                    self.options.max_zip_entries
+                ));
+                ctx.omit();
+                break;
+            }
+            count += 1;
+            let name = match entry.path() {
+                Ok(path) => path
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .trim_start_matches("./")
+                    .trim_start_matches('/')
+                    .to_string(),
+                Err(error) => {
+                    ctx.warn(format!(
+                        "{}: invalid tar entry path: {error}",
+                        display_label(label)
+                    ));
+                    continue;
+                }
+            };
+            let size = entry.header().size().unwrap_or(0);
+            if size > self.options.max_file_bytes {
+                ctx.warn(format!(
+                    "{}: archive entry {name} is larger than the detailed-diff limit",
+                    display_label(label)
+                ));
+                ctx.omit();
+                continue;
+            }
+            if entry_type.is_gnu_sparse() {
+                // Sparse payload bytes are not a contiguous range; materialise
+                // only this entry rather than returning a wrong slice.
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).map_err(|error| {
+                    DiffError::Invalid(format!("tar sparse entry {name}: {error}"))
+                })?;
+                if data.len() as u64 > self.options.max_file_bytes {
+                    ctx.warn(format!(
+                        "{}: archive entry {name} exceeds the detailed-diff limit",
+                        display_label(label)
+                    ));
+                    ctx.omit();
+                    continue;
+                }
+                entries.insert(
+                    name,
+                    SliceEntryMeta {
+                        size: data.len() as u64,
+                        data: SliceData::Owned(data),
+                    },
+                );
+                continue;
+            }
+            if entry_type.is_symlink() || entry_type.is_hard_link() {
+                let target = entry
+                    .link_name()
+                    .ok()
+                    .flatten()
+                    .map(|target| target.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                let kind = if entry_type.is_symlink() {
+                    "symlink"
+                } else {
+                    "hardlink"
+                };
+                let link = format!("{kind} -> {target}").into_bytes();
+                entries.insert(
+                    name,
+                    SliceEntryMeta {
+                        data: SliceData::Owned(link.clone()),
+                        size: link.len() as u64,
+                    },
+                );
+                continue;
+            }
+            let offset = entry.raw_file_position() as usize;
+            let size = usize::try_from(size).map_err(|_| {
+                DiffError::Invalid("tar: entry payload size does not fit in memory".into())
+            })?;
+            let end = offset
+                .checked_add(size)
+                .ok_or_else(|| DiffError::Invalid("tar: entry payload offset overflow".into()))?;
+            if end > bytes.len() {
+                return Err(DiffError::Invalid(
+                    "tar: entry payload exceeds archive size".into(),
+                ));
+            }
+            entries.insert(
+                name,
+                SliceEntryMeta {
+                    data: SliceData::Range(offset, size),
+                    size: size as u64,
+                },
+            );
+        }
+        Ok(SliceStream {
+            bytes,
+            entries,
+            charged: Mutex::new(BTreeSet::new()),
+            stamps: Mutex::new(BTreeMap::new()),
+            stopped: AtomicBool::new(false),
+            max_file_bytes: self.options.max_file_bytes,
+            label: label.to_string(),
+        })
     }
 
     fn compare_archive_pair(

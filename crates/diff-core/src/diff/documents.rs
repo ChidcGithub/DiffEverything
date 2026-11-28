@@ -407,6 +407,88 @@ pub fn compare_pdf_documents(
     Ok(diff)
 }
 
+/// Extract the page text layer from an already decoded content stream. This
+/// mirrors `lopdf::Document::extract_text_chunks` (including `Tf`/`Tj`/`TJ`/
+/// `'`/`"`/`T*`/`ET` handling) but reuses the operations decoded for the
+/// positioned-block pass.
+fn pdf_page_text_from_content(
+    document: &lopdf::Document,
+    page_id: lopdf::ObjectId,
+    content: &lopdf::content::Content,
+) -> String {
+    let encodings: BTreeMap<Vec<u8>, lopdf::Encoding<'_>> = document
+        .get_page_fonts(page_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(name, font)| {
+            font.get_font_encoding(document)
+                .ok()
+                .map(|encoding| (name, encoding))
+        })
+        .collect();
+    let mut current_encoding = None;
+    let mut text = String::new();
+    for operation in &content.operations {
+        match operation.operator.as_ref() {
+            "Tf" => {
+                current_encoding = operation
+                    .operands
+                    .first()
+                    .and_then(|operand| operand.as_name().ok())
+                    .and_then(|font| encodings.get(font));
+            }
+            "Tj" | "TJ" => {
+                if let Some(encoding) = current_encoding {
+                    let _ = collect_pdf_text(&mut text, encoding, &operation.operands);
+                }
+            }
+            "'" => {
+                if !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                if let Some(encoding) = current_encoding {
+                    let _ = collect_pdf_text(&mut text, encoding, &operation.operands);
+                }
+            }
+            "\"" => {
+                if !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                if let Some(encoding) = current_encoding
+                    && let Some(operand) = operation.operands.get(2)
+                {
+                    let _ = collect_pdf_text(&mut text, encoding, std::slice::from_ref(operand));
+                }
+            }
+            "T*" | "ET" if !text.ends_with('\n') => text.push('\n'),
+            "T*" | "ET" => {}
+            _ => {}
+        }
+    }
+    text
+}
+
+fn collect_pdf_text(
+    text: &mut String,
+    encoding: &lopdf::Encoding<'_>,
+    operands: &[lopdf::Object],
+) -> std::result::Result<(), ()> {
+    for operand in operands {
+        match operand {
+            lopdf::Object::String(bytes, _) => {
+                encoding.write_to_string(bytes, text).map_err(|_| ())?;
+            }
+            lopdf::Object::Array(values) => {
+                collect_pdf_text(text, encoding, values)?;
+                text.push(' ');
+            }
+            lopdf::Object::Integer(value) if *value < -100 => text.push(' '),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn parse_pdf(bytes: &[u8]) -> std::result::Result<PdfParsed, String> {
     let document = lopdf::Document::load_mem(bytes).map_err(|error| error.to_string())?;
     let mut pages = Vec::new();
@@ -417,22 +499,23 @@ fn parse_pdf(bytes: &[u8]) -> std::result::Result<PdfParsed, String> {
     for (page_number, page_id) in document.get_pages() {
         page_numbers.push(page_number);
 
-        let mut text = String::new();
-        for chunk in document
-            .extract_text_chunks(&[page_number])
-            .into_iter()
-            .flatten()
-        {
-            text.push_str(&chunk);
-        }
+        // Decode the page content stream once: both the text layer and the
+        // positioned text blocks are derived from the same operations.
+        // lopdf's public text extractor decodes the stream again internally,
+        // which made this the most expensive duplicate in the PDF path.
+        let content_data = document.get_page_content(page_id);
+        let content = lopdf::content::Content::decode(&content_data).ok();
+        let text = content
+            .as_ref()
+            .map(|content| pdf_page_text_from_content(&document, page_id, content))
+            .unwrap_or_default();
         pages.push(normalize_text(text));
 
-        let content = document.get_page_content(page_id);
-        if let Ok(content) = lopdf::content::Content::decode(&content) {
+        if let Some(content) = content {
             let mut x = 0.0f32;
             let mut y = 0.0f32;
             let mut block_index = 0usize;
-            for operation in content.operations {
+            for operation in &content.operations {
                 match operation.operator.as_str() {
                     "Tm" => {
                         if let Some(values) = operation_numbers(&operation.operands, 6) {
@@ -1799,8 +1882,8 @@ fn media_hashes(package: &Package<'_>, prefix: &str) -> MediaHashes {
         .iter()
         .filter(|name| name.starts_with(prefix))
         .filter_map(|name| {
-            let data = package.read(name).ok()?;
-            Some((name.clone(), (hex_digest(&data), data.len() as u64)))
+            let (hash, size) = package.hash_entry(name).ok().flatten()?;
+            Some((name.clone(), (hash, size)))
         })
         .collect()
 }

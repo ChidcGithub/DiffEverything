@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::io::Read;
 use zip::ZipArchive;
@@ -8,6 +9,8 @@ use zip::ZipArchive;
 pub(crate) struct Package<'a> {
     archive: RefCell<ZipArchive<std::io::Cursor<&'a [u8]>>>,
     pub(crate) names: Vec<String>,
+    /// Reused 64 KiB read buffer for streamed entry hashing.
+    scratch: RefCell<Vec<u8>>,
 }
 
 impl<'a> Package<'a> {
@@ -22,6 +25,7 @@ impl<'a> Package<'a> {
         Ok(Self {
             archive: RefCell::new(archive),
             names,
+            scratch: RefCell::new(vec![0; 64 * 1024]),
         })
     }
 
@@ -43,4 +47,41 @@ impl<'a> Package<'a> {
         let data = self.read(name)?;
         String::from_utf8(data).map_err(|error| error.to_string())
     }
+
+    /// Hash one entry without materialising it. The same 64 KiB buffer is
+    /// reused for every entry and every comparison side that owns a package.
+    pub(crate) fn hash_entry(
+        &self,
+        name: &str,
+    ) -> std::result::Result<Option<(String, u64)>, String> {
+        let mut archive = self.archive.borrow_mut();
+        let mut entry = match archive.by_name(name) {
+            Ok(entry) => entry,
+            Err(_) => return Ok(None),
+        };
+        let mut scratch = self.scratch.borrow_mut();
+        let mut hasher = Sha256::new();
+        let mut size = 0u64;
+        loop {
+            let read = entry
+                .read(&mut scratch)
+                .map_err(|error| error.to_string())?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&scratch[..read]);
+            size += read as u64;
+        }
+        let digest = hasher.finalize();
+        let mut hash = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(hash, "{byte:02x}");
+        }
+        Ok(Some((hash, size)))
+    }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/diff/package.rs"]
+mod tests;

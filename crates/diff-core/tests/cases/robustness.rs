@@ -650,6 +650,88 @@ fn zip_stream_compares_many_entries_without_losing_order() {
 }
 
 #[test]
+fn tar_stream_compares_many_entries_and_renames() {
+    let dir = tempdir().unwrap();
+    let entries: Vec<(String, Vec<u8>)> = (0..1_000)
+        .map(|index| {
+            (
+                format!("dir/{index:04}.txt"),
+                format!("tar value {index}\n").into_bytes(),
+            )
+        })
+        .collect();
+    let mut right_entries = entries.clone();
+    right_entries[500].1 = b"changed\n".to_vec();
+    right_entries[999].0 = "dir/renamed.txt".to_string();
+    let left = dir.path().join("left.tar");
+    let right = dir.path().join("right.tar");
+    fs::write(&left, tar_bytes(&entries)).unwrap();
+    fs::write(&right, tar_bytes(&right_entries)).unwrap();
+
+    let report = DiffEngine::new(DiffOptions {
+        max_zip_entries: 2_000,
+        ..DiffOptions::default()
+    })
+    .compare(&left, &right)
+    .unwrap();
+    let DiffBody::Archive(archive) = &report.root.body else {
+        panic!("expected tar archive diff, got {:?}", report.root.body);
+    };
+    assert_eq!(archive.format, "tar");
+    assert_eq!(archive.total_entries, 1_000);
+    assert_eq!(
+        archive
+            .entries
+            .iter()
+            .filter(|entry| entry.status.is_different())
+            .count(),
+        2
+    );
+    let renamed = archive
+        .entries
+        .iter()
+        .find(|entry| entry.renamed_from.is_some())
+        .expect("renamed tar entry");
+    assert_eq!(renamed.label, "dir/renamed.txt");
+    assert_eq!(renamed.renamed_from.as_deref(), Some("dir/0999.txt"));
+}
+
+#[test]
+fn mixed_plain_and_compressed_tar_still_compares() {
+    let dir = tempdir().unwrap();
+    let left_entries = vec![("a.txt".to_string(), b"alpha\n".to_vec())];
+    let right_entries = vec![("a.txt".to_string(), b"beta\n".to_vec())];
+    let left = dir.path().join("left.tar");
+    let right = dir.path().join("right.tar.gz");
+    fs::write(&left, tar_bytes(&left_entries)).unwrap();
+    fs::write(&right, gzip_bytes(&tar_bytes(&right_entries))).unwrap();
+
+    let report = DiffEngine::new(DiffOptions::default())
+        .compare(&left, &right)
+        .unwrap();
+    let DiffBody::Archive(archive) = &report.root.body else {
+        panic!("expected tar archive diff, got {:?}", report.root.body);
+    };
+    assert_eq!(archive.format, "tar");
+    assert_eq!(archive.entries.len(), 1);
+    assert_eq!(archive.entries[0].label, "a.txt");
+}
+
+fn tar_bytes(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut builder = tar::Builder::new(Vec::new());
+    for (name, data) in entries {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, name, data.as_slice())
+            .unwrap();
+    }
+    builder.into_inner().unwrap()
+}
+
+#[test]
 fn expanded_bytes_budget_limits_nested_archives() {
     let dir = tempdir().unwrap();
     // The inner archives differ, so the outer files are not byte-identical and
