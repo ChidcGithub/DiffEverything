@@ -1094,11 +1094,15 @@ fn run() -> Result<i32> {
     {
         let left_kind = diff_core::detect::detect_file(&left);
         let right_kind = diff_core::detect::detect_file(&right);
+        let left_dex = left_kind == FileKind::Dex
+            || (left_kind == FileKind::Zip && diff_core::disassembly::archive_contains_dex(&left));
+        let right_dex = right_kind == FileKind::Dex
+            || (right_kind == FileKind::Zip
+                && diff_core::disassembly::archive_contains_dex(&right));
         let left_code = matches!(left_kind, FileKind::Executable | FileKind::Dex)
-            || (matches!(left_kind, FileKind::Zip)
-                && diff_core::disassembly::archive_contains_code(&left));
+            || (left_kind == FileKind::Zip && diff_core::disassembly::archive_contains_code(&left));
         let right_code = matches!(right_kind, FileKind::Executable | FileKind::Dex)
-            || (matches!(right_kind, FileKind::Zip)
+            || (right_kind == FileKind::Zip
                 && diff_core::disassembly::archive_contains_code(&right));
         if left_code || right_code {
             let tool = match &cli.objdump {
@@ -1106,7 +1110,11 @@ fn run() -> Result<i32> {
                 Some(path) => anyhow::bail!("objdump not found at {}", path.display()),
                 None => None,
             };
-            if confirm_decompile(&left, &right, tool.as_deref(), cli.yes)? {
+            // DEX-to-Java is an embedded decompiler: `--detail full` is the
+            // explicit request, so do not ask again when stdin is not a TTY.
+            // External objdump/unwinders still require the usual approval.
+            let builtin_dex = tool.is_none() && (left_dex || right_dex);
+            if builtin_dex || confirm_decompile(&left, &right, tool.as_deref(), cli.yes)? {
                 options.decompile = Some(diff_core::engine::DecompileOptions {
                     objdump: tool,
                     max_lines: 20_000,

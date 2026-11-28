@@ -296,6 +296,31 @@ fn strip_address(line: &str) -> String {
 }
 
 /// Return true when a ZIP/APK contains code-bearing entries.
+/// True when a ZIP/APK contains a DEX payload. Used to authorize the built-in
+/// DEX-to-Java decompiler automatically under `--detail full`.
+pub fn archive_contains_dex(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(mut archive) = ZipArchive::new(file) else {
+        return false;
+    };
+    for index in 0..archive.len().min(2_000) {
+        let Ok(mut entry) = archive.by_index(index) else {
+            continue;
+        };
+        if entry.name().to_ascii_lowercase().ends_with(".dex") {
+            return true;
+        }
+        let mut header = [0u8; 4];
+        use std::io::Read as _;
+        if entry.read_exact(&mut header).is_ok() && header == *b"dex\n" {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn archive_contains_code(path: &Path) -> bool {
     let Ok(file) = std::fs::File::open(path) else {
         return false;

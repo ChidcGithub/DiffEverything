@@ -161,6 +161,26 @@ fn full_detail_decompiles_apk_dex_with_yes() {
 }
 
 #[test]
+fn full_detail_decompiles_apk_dex_without_yes() {
+    let output = run_str(&[
+        fixture("apk/code-old.apk").to_str().unwrap(),
+        fixture("apk/code-new.apk").to_str().unwrap(),
+        "--detail",
+        "full",
+        "--no-color",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("classes.dex dex-java"), "{text}");
+    assert!(text.contains("onCreate"), "{text}");
+    assert!(
+        !stderr(&output).contains("stdin is not a terminal"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn full_detail_decompiles_apk_native_libs() {
     let output = run_str(&[
         fixture("apk/native-old.apk").to_str().unwrap(),

@@ -1604,7 +1604,7 @@ impl DiffEngine {
     fn compare_dex_bytes(&self, label: &str, left: &[u8], right: &[u8], ctx: &mut Ctx) -> DiffNode {
         if self.options.decompile.is_none() {
             ctx.warn(format!(
-                "{}: DEX decompilation requires full detail authorization; falling back to binary",
+                "{}: DEX decompilation requires --detail full or explicit decompile options; falling back to binary",
                 display_label(label)
             ));
             return self.compare_binary_bytes(label, left, right, ctx);
