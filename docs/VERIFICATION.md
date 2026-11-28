@@ -6,6 +6,14 @@
 - Rust 1.97.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
 
+## Release Verification (v1.1.0 - Toyger)
+
+On 2026-11-28, the `1.1.0 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 351 debug tests, 351 release tests, the optimized `dist` build and the 184-case repository smoke suite against the `dist` binary, with exit codes 0/1/3 verified live on a truncated-equal directory. It adds the shared expanded-bytes `ResourceBudget` (`--max-expanded-bytes`, default 1 GiB) charged atomically by every archive reader and decompressor, stops directory scans at the entry limit, propagates `ComparisonCompleteness::Truncated` from every omitted-entry limit into `DiffReport.completeness` with the new indeterminate exit code 3, and bounds file reads to remove the metadata-versus-read TOCTOU window. The v1.0.4 inline-test layout is kept.
+
+Final release artifact: `target/dist/diff-everything.exe`, 55,639,552 bytes (53.06 MiB), SHA-256 `1A4B8087754D5C09C032454527F673F4D3BD00FB44E986E3BCCED77242C12982`. The binary was built from code commit `24a364c80b6b` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
+
+Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md`.
+
 ## Release Verification (v1.0.4 - Toyger)
 
 On 2026-11-28, the `1.0.4 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 346 debug tests, 346 release tests, the optimized `dist` build and the 184-case repository smoke suite run against the `dist` binary (real APK, CAB and XAR pairs from `testdata/` and `fixtures/` were compared as an extra sanity check). It routes every archive reader, CAB included, through the shared per-file bounded read, validates the XAR table-of-contents size before allocating and bounds XAR payloads and ZIP LZMA compressed input, counts `--max-depth` identically for directories, archives and compressed streams, and moves every inline unit test out of `src/` into `tests/unit/`.
