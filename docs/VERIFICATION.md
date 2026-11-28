@@ -6,6 +6,14 @@
 - Rust 1.97.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
 
+## Release Verification (v1.0.4 - Toyger)
+
+On 2026-11-28, the `1.0.4 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 346 debug tests, 346 release tests, the optimized `dist` build and the 184-case repository smoke suite run against the `dist` binary (real APK, CAB and XAR pairs from `testdata/` and `fixtures/` were compared as an extra sanity check). It routes every archive reader, CAB included, through the shared per-file bounded read, validates the XAR table-of-contents size before allocating and bounds XAR payloads and ZIP LZMA compressed input, counts `--max-depth` identically for directories, archives and compressed streams, and moves every inline unit test out of `src/` into `tests/unit/`.
+
+Final release artifact: `target/dist/diff-everything.exe`, 55,621,120 bytes (53.04 MiB), SHA-256 `BBC60C8209A88A1AD7FA71231AE7ED44568887F3FFFE3B79D9D4D8D40F4B4F31`. The binary was built from code commit `080929023924` with the `dist` profile (fat LTO, one codegen unit, stripped symbols).
+
+Release assets: `diff-everything.exe`, `LICENSE`, and `THIRD_PARTY_LICENSES.md`.
+
 ## Release Verification (v1.0.3 - Toyger)
 
 On 2026-11-27, the `1.0.3 (Toyger)` release passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, 340 debug tests, 340 release tests, the optimized `dist` build and 189 smoke tests. It adds `--support` format/capability discovery, removes the feature list from `--version`, keeps the >99% average byte-ratio `COMPLETELY DIFFERENT` rule, consolidates diff-core integration tests into one link target, and adds the fast release profile. Packed-application detection was corrected to use PE/ELF section names and APK shell-library entries rather than raw signature strings, eliminating false positives from the tool's own string table.
