@@ -98,7 +98,7 @@ Manual release verification on Windows also downloaded two HTTP files with the e
 
 ## Test Results
 
-Integration tests are consolidated under one `tests/integration.rs` target; the six case files are modules under `tests/cases/` and no longer produce six independent links. `cargo build --release` uses the fast profile (no LTO, 16 CGU); the shipping `dist` profile uses fat LTO and one CGU.
+Integration tests are consolidated under one `tests/integration.rs` target; the six case files are modules under `tests/cases/` and no longer produce six independent links. `cargo build --release` is the shipping profile (opt-level 3, thin LTO, 4 CGU, stripped symbols); `cargo test --release` shares the same dependency artifacts.
 
 ```text
 cargo test --workspace

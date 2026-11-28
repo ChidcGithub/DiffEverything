@@ -308,9 +308,8 @@ cargo test --workspace
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 
-# Fast iteration vs. optimized shipping binary
+# Optimized shipping binary (also what `cargo test --release` builds against)
 cargo build --release -p diff-cli
-cargo build --profile dist -p diff-cli
 ```
 
 The release was also validated with 189 end-to-end smoke tests and real external fixtures. Maintainer fixture, smoke-test and release scripts are kept local and are not part of the public repository.
@@ -359,7 +358,7 @@ elapsed  7 ms
 
 ## Performance, Size and Hardening
 
-- `cargo build --release` is the fast iteration profile: `opt-level = 3`, no LTO, 16 codegen units and symbol stripping. The shipping `dist` profile (`cargo build --profile dist -p diff-cli`) uses fat LTO and one codegen unit for the smallest/fastest binary. This keeps normal release builds and release tests practical while preserving an optimized artifact for publication.
+- `cargo build --release` is the only optimized profile: `opt-level = 3`, thin LTO, four codegen units and symbol stripping. Thin LTO keeps the binary close to a fat-LTO build while building roughly three times faster, and `cargo test --release` shares the same dependency artifacts, so the tested and the shipped binary come from one profile.
 - `crates/diff-core/tests/integration.rs` is the single integration-test target; the six case modules are included from `tests/cases/` and no longer produce six separate link steps.
 - Unit tests live outside `src/` in `tests/unit/<source path>.rs`; each source file mounts them with `#[cfg(test)] #[path]`, keeping private access without test code in the source files.
 - Every comparison carries a shared `ResourceBudget`: archive readers and decompressors charge the bytes they unpack atomically, so rayon workers cannot race past the cap, and the budget latches when spent. Containers that omitted entries (archive entry caps, directory scan stop, depth limit, budget exhaustion) propagate a `ComparisonCompleteness` of `Truncated` up the `DiffNode` tree into `DiffReport.completeness`; the CLI then exits `3` instead of `0` when nothing differed but the input was not fully compared.

@@ -51,15 +51,11 @@ zip = { version = "2.6", default-features = false, features = [
 zstd = { version = "0.14", default-features = false }
 
 [profile.release]
-# Fast iteration profile: no cross-crate LTO and parallel codegen. Use the
-# `dist` profile below for the optimized shipping binary.
+# Single shipping profile: thin LTO with parallel codegen keeps the binary
+# close to a fat-LTO build while building much faster, and `cargo test
+# --release` shares these artifacts, so one dependency tree serves both the
+# tested and the published binary.
 opt-level = 3
-lto = false
-codegen-units = 16
-strip = "symbols"
-
-[profile.dist]
-inherits = "release"
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 4
 strip = "symbols"
