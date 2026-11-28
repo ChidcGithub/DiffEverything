@@ -6,11 +6,25 @@
 - Rust 1.100.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
 
-## Development after v1.2.1
+## Release Verification (v1.2.2 - Toyger)
 
-- Single top-level files larger than 2 MiB now report byte-oriented progress while reading, with a background ticker that keeps the spinner moving during CPU-heavy parsing. Archives keep the root file bar and add a per-entry byte bar for the actively unpacked ZIP entry (nested archives replace the outer entry bar); directory comparisons keep their entry-count progress.
+- Single top-level files larger than 2 MiB report byte-oriented progress while reading, with a background ticker that keeps the spinner moving during CPU-heavy parsing. Archives keep the root file bar and add a per-entry byte bar for the actively unpacked ZIP entry (nested archives replace the outer entry bar); directory comparisons keep their entry-count progress. Entries below 128 KiB skip the per-entry bar to avoid overhead on huge entry counts.
 - Binary diffs collapse a common-prefix-only tail into one summary line such as `left has 1047552 extra byte(s) at 0x00000400 (all 0xff)` instead of emitting thousands of empty right-side hex rows.
-- Regression tests cover the binary tail summary; local verification: `cargo fmt --all -- --check`, clippy, 407 workspace tests.
+- `--no-decompile` keeps `--detail full` while skipping expensive built-in DEX/native decompilation, providing a fast APK comparison path.
+- `.cargo/config.toml` pins Cargo output to `target/` so release artifacts stay in `target/release/`.
+
+Verification performed locally:
+
+```text
+cargo fmt --all                                      passed
+cargo clippy --release --workspace --all-targets -- -D warnings passed
+cargo test --release --workspace                     passed: 408 tests
+cargo build --release                                passed
+scripts/smoke-test.ps1 (release binary)              passed: 189 passed, 0 failed
+```
+
+
+Release artifact: `target/release/diff-everything.exe`, 60,276,224 bytes (57.48 MiB), SHA-256 `402806E87B1FE5AF3A169A6783A050B7B72D3E31DF42C009CBEE7366E34C03B4`. Built with the release profile (thin LTO, four codegen units, stripped symbols, Rust 1.100.1) from the 1.2.2 source tree.
 
 ## Release Verification (v1.2.1 - Toyger)
 

@@ -1,0 +1,6 @@
+[build]
+# Keep Cargo artifacts under the normal profile directories:
+#   target/debug/... and target/release/...
+# This also documents the intended layout for local shells that may still have
+# a stale CARGO_TARGET_DIR exported from earlier debugging.
+target-dir = "target"

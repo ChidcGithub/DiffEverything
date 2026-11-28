@@ -268,18 +268,22 @@ impl ZipStream<'_> {
                 .map_err(|error| DiffError::Invalid(format!("zip entry {name}: {error}")))?;
             let mut data = Vec::new();
             let mut limited = (&mut entry).take(self.max_file_bytes + 1);
-            let mut buffer = [0u8; 64 * 1024];
-            loop {
-                let read = limited
-                    .read(&mut buffer)
-                    .map_err(|error| DiffError::Invalid(format!("zip entry {name}: {error}")))?;
-                if read == 0 {
-                    break;
-                }
-                data.extend_from_slice(&buffer[..read]);
-                if let Some(progress) = progress {
+            if let Some(progress) = progress {
+                let mut buffer = vec![0u8; 256 * 1024];
+                loop {
+                    let read = limited.read(&mut buffer).map_err(|error| {
+                        DiffError::Invalid(format!("zip entry {name}: {error}"))
+                    })?;
+                    if read == 0 {
+                        break;
+                    }
+                    data.extend_from_slice(&buffer[..read]);
                     progress.add_entry_bytes(read as u64);
                 }
+            } else {
+                limited
+                    .read_to_end(&mut data)
+                    .map_err(|error| DiffError::Invalid(format!("zip entry {name}: {error}")))?;
             }
             if data.len() as u64 > self.max_file_bytes {
                 ctx.warn(format!(
@@ -656,6 +660,18 @@ impl DiffEngine {
     pub fn with_progress(mut self, progress: ProgressHandle) -> Self {
         self.progress = Some(progress);
         self
+    }
+
+    fn entry_progress(&self, key: &str, total_bytes: u64) -> Option<EntryProgress> {
+        // Tiny entries finish faster than a terminal refresh; showing a bar
+        // for each of 10k+ files costs more than it communicates.
+        const MIN_ENTRY_PROGRESS_BYTES: u64 = 128 * 1024;
+        if total_bytes < MIN_ENTRY_PROGRESS_BYTES {
+            return None;
+        }
+        self.progress
+            .as_ref()
+            .and_then(|progress| progress.try_start_entry(key, total_bytes))
     }
 
     pub fn options(&self) -> &DiffOptions {
@@ -2814,9 +2830,8 @@ impl DiffEngine {
                         pending.push(key.clone());
                         continue;
                     }
-                    let entry_progress = self.progress.as_ref().and_then(|progress| {
-                        progress.try_start_entry(key, left_size.saturating_add(right_size))
-                    });
+                    let entry_progress =
+                        self.entry_progress(key, left_size.saturating_add(right_size));
                     let left_data = left.read_with_progress(
                         key,
                         ctx,
@@ -2920,10 +2935,7 @@ impl DiffEngine {
                     .size(&key)
                     .unwrap_or(0)
                     .saturating_add(right.size(&right_key).unwrap_or(0));
-                let entry_progress = self
-                    .progress
-                    .as_ref()
-                    .and_then(|progress| progress.try_start_entry(&key, total_bytes));
+                let entry_progress = self.entry_progress(&key, total_bytes);
                 let left_data = left.read_with_progress(
                     &key,
                     ctx,
@@ -2971,10 +2983,7 @@ impl DiffEngine {
             let process =
                 |(key, _right_key, left_data, right_data): &(String, String, Vec<u8>, Vec<u8>)| {
                     let total = (left_data.len() + right_data.len()) as u64;
-                    let entry_progress = self
-                        .progress
-                        .as_ref()
-                        .and_then(|progress| progress.try_start_entry(key, total));
+                    let entry_progress = self.entry_progress(key, total);
                     if let Some(progress) = &entry_progress {
                         progress.handle().add_entry_bytes(total);
                     }
@@ -4216,10 +4225,7 @@ impl DiffEngine {
                 });
                 let total = left_entries.get(key).map_or(0, Vec::len) as u64
                     + right_data.map_or(0, Vec::len) as u64;
-                let entry_progress = self
-                    .progress
-                    .as_ref()
-                    .and_then(|progress| progress.try_start_entry(key, total));
+                let entry_progress = self.entry_progress(key, total);
                 if let Some(progress) = &entry_progress {
                     progress.handle().add_entry_bytes(total);
                 }
@@ -5395,7 +5401,7 @@ fn read_file_bounded_with_progress(
     let mut file = fs::File::open(path)?;
     let mut bytes = Vec::new();
     let cap = limit.saturating_add(1);
-    let mut buffer = [0u8; 64 * 1024];
+    let mut buffer = vec![0u8; 1024 * 1024];
     loop {
         let remaining = cap.saturating_sub(bytes.len() as u64);
         if remaining == 0 {

@@ -146,7 +146,6 @@ impl ProgressHandle {
         }
         self.inner.file_current.store(current, Ordering::Relaxed);
         self.inner.root_current.store(current, Ordering::Relaxed);
-        render(self, false);
     }
 
     pub fn add_file_bytes(&self, delta: u64) {
@@ -155,7 +154,6 @@ impl ProgressHandle {
         }
         self.inner.file_current.fetch_add(delta, Ordering::Relaxed);
         self.inner.root_current.fetch_add(delta, Ordering::Relaxed);
-        render(self, false);
     }
 
     /// Claim the shared per-entry bar. Returns `None` when another worker is
@@ -187,7 +185,6 @@ impl ProgressHandle {
             return;
         }
         self.inner.entry_current.fetch_add(delta, Ordering::Relaxed);
-        render(self, false);
     }
 
     fn finish_entry(&self, generation: u64) {
@@ -274,7 +271,6 @@ impl ProgressHandle {
         }
         self.inner.current.fetch_add(1, Ordering::Relaxed);
         self.set_message(label);
-        render(self, false);
     }
 
     pub fn finish(&self) {

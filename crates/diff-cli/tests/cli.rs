@@ -181,6 +181,22 @@ fn full_detail_decompiles_apk_dex_without_yes() {
 }
 
 #[test]
+fn full_detail_no_decompile_skips_code_decompilation() {
+    let output = run_str(&[
+        fixture("apk/code-old.apk").to_str().unwrap(),
+        fixture("apk/code-new.apk").to_str().unwrap(),
+        "--detail",
+        "full",
+        "--no-decompile",
+        "--no-color",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(!text.contains("dex-java"), "{text}");
+    assert!(!text.contains("decompiled code"), "{text}");
+}
+
+#[test]
 fn full_detail_decompiles_apk_native_libs() {
     let output = run_str(&[
         fixture("apk/native-old.apk").to_str().unwrap(),
@@ -1721,7 +1737,7 @@ fn version_reports_codename_and_build_info() {
     assert_eq!(long.status.code(), Some(0), "{}", stderr(&long));
     let text = stdout(&long);
     for field in [
-        "1.2.1 (Toyger)",
+        "1.2.2 (Toyger)",
         "Commit:",
         "Build:",
         "Rust:",
@@ -1734,7 +1750,7 @@ fn version_reports_codename_and_build_info() {
 
     let short = run_str(&["-V"]);
     assert_eq!(short.status.code(), Some(0), "{}", stderr(&short));
-    assert_eq!(stdout(&short).trim(), "diff-everything 1.2.1 (Toyger)");
+    assert_eq!(stdout(&short).trim(), "diff-everything 1.2.2 (Toyger)");
 }
 
 #[test]

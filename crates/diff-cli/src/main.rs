@@ -503,6 +503,10 @@ struct Cli {
     #[arg(help_heading = "Approvals & decompilation", short = 'y', long)]
     yes: bool,
 
+    /// Keep full detail but skip code decompilation (faster binary comparison)
+    #[arg(help_heading = "Approvals & decompilation", long)]
+    no_decompile: bool,
+
     /// Optional external objdump path; default uses embedded pure-Rust decoders
     #[arg(help_heading = "Approvals & decompilation", long, value_name = "FILE")]
     objdump: Option<PathBuf>,
@@ -1615,7 +1619,8 @@ fn resolve_decompile_options(
     left: &Path,
     right: &Path,
 ) -> Result<Option<diff_core::engine::DecompileOptions>> {
-    if cli.detail != DetailMode::Full
+    if cli.no_decompile
+        || cli.detail != DetailMode::Full
         || cli.pdf_visual
         || cli.sync.is_some()
         || cli.base.is_some()

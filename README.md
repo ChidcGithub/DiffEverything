@@ -1,6 +1,6 @@
 # DiffEverything
 
-**Current release: 1.2.1 (Toyger)**
+**Current release: 1.2.2 (Toyger)**
 
 A Rust CLI that compares heterogeneous files by normalizing them into one diff tree. It does not replace `diff`; it adds format-aware comparison and multiple report formats.
 
@@ -191,7 +191,7 @@ Common examples:
 `--version` prints the codename plus build metadata; `-V` prints only the first line:
 
 ```text
-diff-everything 1.2.1 (Toyger)
+diff-everything 1.2.2 (Toyger)
 Commit:     <git-commit>
 Build:      release / <target-triple>
 Rust:       <rustc-version>
@@ -278,6 +278,7 @@ Repository: https://github.com/ChidcGithub/DiffEverything
 | `--ocr` / `--tesseract <FILE>` / `--tessdata <DIR>` / `--ocr-language <LANG>` | Image/PDF OCR and tool configuration |
 | **Decompilation and external tools** | |
 | `-y, --yes` | Accept external decompilation, large-download (>100 MiB) and packed-application prompts; built-in DEX decompilation uses `--detail full` and prompts only when interactive |
+| `--no-decompile` | Keep `--detail full` but skip DEX/native code decompilation; useful for fast binary APK comparisons |
 | `--objdump <FILE>` | Optional external llvm-objdump/objdump; embedded pure-Rust disassemblers are the default |
 | `--external-tool <PROGRAM>` / `--external-arg <ARG>` | Delegate comparison to an external program; LEFT/RIGHT are appended |
 
@@ -347,7 +348,7 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 - Example terminal layout (colors omitted):
 
 ```text
-DiffEverything 1.2.1 (Toyger)
+DiffEverything 1.2.2 (Toyger)
 ========================================================================
 left     fixtures\text\old.txt  [text | 105 B]
 right    fixtures\text\new.txt  [text | 160 B]
@@ -379,13 +380,14 @@ elapsed  7 ms
 
 ## Performance, Size and Hardening
 
-- The 1.2.1 engine avoids repeated parsing: PDF text, positioned blocks, metadata and page geometry come from one `lopdf::Document` per side; DOCX/PPTX/ODT/ODP and XLSX metadata share one open ZIP `Package` per side; left and right document/workbook parsing runs through `rayon::join`. The PDF path decodes each page content stream once and derives both the text layer and positioned blocks from it; Office/OpenDocument media hashes stream through one reused 64 KiB buffer. Measured on the benchmark corpus, a 1000-page PDF is 8.3× faster, multipart DOCX 3.8×, multipart ODT 3.7×, PPTX 2.2× and XLSX 1.33×. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+- The 1.2.2 engine avoids repeated parsing: PDF text, positioned blocks, metadata and page geometry come from one `lopdf::Document` per side; DOCX/PPTX/ODT/ODP and XLSX metadata share one open ZIP `Package` per side; left and right document/workbook parsing runs through `rayon::join`. The PDF path decodes each page content stream once and derives both the text layer and positioned blocks from it; Office/OpenDocument media hashes stream through one reused 64 KiB buffer. Measured on the benchmark corpus, a 1000-page PDF is 8.3× faster, multipart DOCX 3.8×, multipart ODT 3.7×, PPTX 2.2× and XLSX 1.33×. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 - Text comparison strips common line prefixes/suffixes before running Myers/patience, switches to patience for large changed middles, stops building hunks at the detail cap, skips word-level spans above a threshold, and avoids a full normalization copy when `--ignore-whitespace`/`--ignore-case` are off. On a 49 MB file with ten changed lines this is about 10× faster with 47% lower peak RSS, and memory is 80% lower on the 4.8 MB variant.
 - Structured comparison returns immediately for equal subtrees, trims equal array edges, and aligns large arrays on stable 128-bit content fingerprints rather than serialising every value. The 50k-record JSON benchmark is about 1.46× faster with 13% lower peak RSS.
 - Directories and archives pair unmatched entries by `(size, SHA-256)` and report `renamed_from`, so a rename is one moved entry instead of add+remove. Only unmatched entries are hashed, directory hashes hold an in-flight permit sized to the file, duplicate content is paired stably, and explicit CSV keys still win over implicit keys. Rename detection never changes `completeness` or exit codes.
 - ZIP comparison scans the central directory once, keeps only entry metadata, pre-checks unpacked sizes, reads payloads on demand, and materialises changed pairs in bounded 32 MiB batches. On the 10k-entry / 82 MB ZIP case this cuts peak RSS by 89% and is about 1.66× faster. Uncompressed TAR, CPIO and AR/DEB use the same catalog-plus-byte-range approach; 10k-entry TAR drops peak RSS by 48% and is 1.36× faster. Compressed TAR, 7z, RPM, CAB, ISO and XAR still materialise entries.
 - Single large-file comparisons show a byte progress bar with a live spinner while the parser runs; for archives the APK/file bar stays visible next to the entry-count bar, and each actively unpacked entry gets its own byte bar while ZIP data is decompressed. The spinner is driven by a background ticker, so a long PDF/DEX/document parse does not look frozen.
 - Binary diffs detect a common prefix followed by a one-sided tail and collapse it into one summary such as `left has 2,000,000 extra byte(s) at 0x00562140 (all 0xff)` instead of printing thousands of `--` hex rows.
+- Full-detail APK comparison can spend most of its time in embedded DEX-to-Java decompilation and native disassembly. Use `--no-decompile` to keep the full report but compare those entries as binaries; the approval prompt shows the same choice interactively.
 - `--detail concise` is enforced while comparing, not only after the full report is built: text hunks, table rows, workbook cells, document blocks and slides stop at the display cap (default 10, configurable with `--detail <N>`). The cap is display-only; it does not change `completeness` or turn an equal comparison into exit code `3`.
 - `cargo build --release` is the only optimized profile: `opt-level = 3`, thin LTO, four codegen units and symbol stripping. Thin LTO keeps the binary close to a fat-LTO build while building roughly three times faster, and `cargo test --release` shares the same dependency artifacts, so the tested and the shipped binary come from one profile.
 - `crates/diff-core/tests/integration.rs` is the single integration-test target; the six case modules are included from `tests/cases/` and no longer produce six separate link steps.

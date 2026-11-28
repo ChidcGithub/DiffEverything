@@ -1,4 +1,4 @@
-# Performance baseline and 1.2.1 results
+# Performance baseline and 1.2.2 results
 
 This document records the M0 baseline and the M1–M4 engineering results. It is
 meant to be reproducible: the corpus generator, runner and allocation harness
@@ -15,7 +15,7 @@ small, and the commands below rebuild the same inputs.
 | Toolchain | rustc/cargo 1.100.1 |
 | Binary | `cargo build --release` |
 | Baseline | `1.2.0 (Toyger)`, commit `959cf7c` |
-| Candidate | 1.2.1 working tree |
+| Candidate | 1.2.2 working tree |
 | CLI | `--quiet --jobs 4 --max-entries 20000` |
 
 Wall time is the best of five warm-cache runs. Peak working set is sampled
@@ -48,7 +48,7 @@ Office or a PDF toolchain.
 
 ## Results
 
-| Case | 1.2.0 ms | 1.2.1 ms | Speedup | 1.2.0 peak MB | 1.2.1 peak MB | Δ memory | Read MB (old/new) | Expanded MB (old/new) |
+| Case | 1.2.0 ms | 1.2.2 ms | Speedup | 1.2.0 peak MB | 1.2.2 peak MB | Δ memory | Read MB (old/new) | Expanded MB (old/new) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | `text-prefix` | 83.3 | 28.3 | 2.94× | 55.8 | 4.2 | −92% | 9.1 / 9.1 | 0 / 0 |
 | `text-prefix-large` | 1390.9 | 169.7 | 8.20× | 548.3 | 291.0 | −47% | 93.1 / 93.1 | 0 / 0 |
@@ -70,7 +70,7 @@ while expanded bytes count the shared comparison budget.
 
 Representative real fixtures (best of five):
 
-| Fixture | 1.2.0 ms | 1.2.1 ms | 1.2.0 peak MB | 1.2.1 peak MB |
+| Fixture | 1.2.0 ms | 1.2.2 ms | 1.2.0 peak MB | 1.2.2 peak MB |
 |---|---:|---:|---:|---:|
 | APK (`native-old`/`native-new`) | 18.3 | 16.5 | 4.6 | 4.6 |
 | PDF (`old`/`new`) | 37.3 | 24.9 | 13.9 | 15.4 |
@@ -87,7 +87,7 @@ this is allocation volume, not peak RSS. The harness is in
 `.private/bench/alloc_harness/` and is built against either the current tree or
 a detached `959cf7c` worktree for the baseline.
 
-| Case | 1.2.0 allocations | 1.2.1 allocations | 1.2.0 allocated MB | 1.2.1 allocated MB |
+| Case | 1.2.0 allocations | 1.2.2 allocations | 1.2.0 allocated MB | 1.2.2 allocated MB |
 |---|---:|---:|---:|---:|
 | `text-prefix-large` | 4,000,584 | 471 | 1300.7 | 477.1 |
 | `json-large` | 2,230,095 | 925,216 | 147.2 | 101.0 |
@@ -154,7 +154,7 @@ decode and adds realistic multipart Office corpora:
 ## Resource-safety hardening
 
 The post-review hardening pass closes the resource-safety gaps found around
-the 1.2.1 engine:
+the 1.2.2 engine:
 
 - **Recursive in-flight gate**: container comparisons release their read
   permit before expanding nested entries. Leaf reads stay gated; a parent
