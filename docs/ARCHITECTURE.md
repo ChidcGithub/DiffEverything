@@ -258,7 +258,8 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - Files below `max_file_bytes` are read into memory at once.
 - Larger files use 64 KiB streaming comparison and emit a summary only.
 - Directories build a file table before comparison for statistics and truncation.
-- ZIP/TAR entries are read in memory with per-entry limits to avoid zip bombs.
+- ZIP/TAR entries are read in memory with per-entry limits to avoid zip bombs. Every archive reader (ZIP, 7Z, TAR, RPM, CAB, ISO, AR, XAR, CPIO) reads each entry through the same bounded read (`read_bounded`: at most `limit + 1` bytes) and skips entries that exceed the per-file limit. XAR checks the declared table-of-contents size against the limit before reserving memory (and caps the reservation), reads the compressed TOC and payloads through the bound, and ZIP LZMA bounds the compressed stream as well as its output.
+- `max_depth` counts container levels from the input root (depth 0): leaves are compared while `depth <= max_depth`, and every container (directory, archive or compressed stream) expands only while `depth < max_depth`. A directory at the limit is reported as one `directory depth limit reached` node instead of being scanned, matching how archives at the limit are reported.
 - Symbolic links are not followed.
 - All limits are exposed through `DiffOptions`. `--max-file-bytes` overrides the 64 MiB per-file detailed-diff limit; `--no-file-size-limit` sets `UNLIMITED_FILE_BYTES` (`u64::MAX / 2`) so the same code paths keep overflow-safe `limit + 1` reads while allowing arbitrarily large real files.
 - `--no-entry-limit` sets directory and archive entry limits to `usize::MAX`. `--no-limits` additionally removes row, hunk, structured-change, table, workbook, depth and PDF page limits; the individual limit flags conflict with it. These options intentionally trade memory/runtime for completeness.

@@ -322,6 +322,182 @@ fn nested_zip_archives_are_compared_recursively() {
 }
 
 #[test]
+fn xar_table_of_contents_cannot_reserve_beyond_the_limit() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left.xar");
+    let right = dir.path().join("right.xar");
+    let toc = zlib_bytes(b"<xar><toc/></xar>");
+    fs::write(&left, xar_header(&toc, 1024 * 1024 * 1024)).unwrap();
+    fs::write(&right, xar_header(&toc, 13)).unwrap();
+
+    let report = DiffEngine::new(DiffOptions::default())
+        .compare(&left, &right)
+        .unwrap();
+    // A declared TOC size above the per-file limit is rejected before any
+    // allocation, and the file falls back to a binary diff.
+    assert!(matches!(report.root.body, DiffBody::Binary(_)));
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("table of contents declares")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn xar_table_of_contents_is_read_through_the_limit() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left.xar");
+    let right = dir.path().join("right.xar");
+    // The header claims a 16-byte TOC and the compressed TOC is small enough
+    // for the whole file to stay under the 200-byte limit, but the zlib stream
+    // expands to 50 KB; the reader must stop at the limit and report the
+    // mismatch instead of decompressing everything.
+    let toc = zlib_bytes(&[b'a'; 50_000]);
+    assert!(
+        28 + toc.len() <= 200,
+        "fixture must fit the limit: {}",
+        toc.len()
+    );
+    fs::write(&left, xar_header(&toc, 16)).unwrap();
+    fs::write(&right, xar_header(&toc, 17)).unwrap();
+
+    let options = DiffOptions {
+        max_file_bytes: 200,
+        ..DiffOptions::default()
+    };
+    let report = DiffEngine::new(options).compare(&left, &right).unwrap();
+    assert!(matches!(report.root.body, DiffBody::Binary(_)));
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("table of contents size mismatch")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn directory_at_the_depth_limit_is_reported_not_skipped() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left");
+    let right = dir.path().join("right");
+    for (root, text) in [(&left, "old\n"), (&right, "new\n")] {
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::write(root.join("top.txt"), text).unwrap();
+        fs::write(root.join("a/b/deep.txt"), text).unwrap();
+    }
+
+    let options = DiffOptions {
+        max_depth: 1,
+        ..DiffOptions::default()
+    };
+    let report = DiffEngine::new(options).compare(&left, &right).unwrap();
+    match &report.root.body {
+        DiffBody::Directory(diff) => {
+            assert_eq!(diff.total_entries, 2);
+            let top = diff
+                .entries
+                .iter()
+                .find(|entry| entry.label == "top.txt")
+                .expect("top.txt");
+            assert_eq!(top.status, DiffStatus::Different);
+            let nested = diff
+                .entries
+                .iter()
+                .find(|entry| entry.label == "a")
+                .expect("directory a");
+            assert_eq!(nested.status, DiffStatus::Unsupported);
+            match &nested.body {
+                DiffBody::Unsupported(info) => {
+                    assert_eq!(info.note, "directory depth limit reached");
+                }
+                other => panic!("expected unsupported node, got {other:?}"),
+            }
+        }
+        other => panic!("expected directory diff, got {other:?}"),
+    }
+    assert_eq!(report.summary.lines_added, 1);
+    assert_eq!(report.summary.lines_removed, 1);
+}
+
+#[test]
+fn depth_limit_applies_identically_to_archives_and_directories() {
+    let dir = tempdir().unwrap();
+    let archive_left = dir.path().join("left.zip");
+    let archive_right = dir.path().join("right.zip");
+    fs::write(
+        &archive_left,
+        zip_bytes(&[("inner.zip", zip_bytes(&[("a.txt", b"old\n")]).as_slice())]),
+    )
+    .unwrap();
+    fs::write(
+        &archive_right,
+        zip_bytes(&[("inner.zip", zip_bytes(&[("a.txt", b"new\n")]).as_slice())]),
+    )
+    .unwrap();
+    let tree_left = dir.path().join("tree-left");
+    let tree_right = dir.path().join("tree-right");
+    fs::create_dir_all(tree_left.join("inner")).unwrap();
+    fs::create_dir_all(tree_right.join("inner")).unwrap();
+    fs::write(tree_left.join("inner/a.txt"), b"old\n").unwrap();
+    fs::write(tree_right.join("inner/a.txt"), b"new\n").unwrap();
+
+    let options = DiffOptions {
+        max_depth: 1,
+        ..DiffOptions::default()
+    };
+    let engine = DiffEngine::new(options);
+    let archive = engine.compare(&archive_left, &archive_right).unwrap();
+    let tree = engine.compare(&tree_left, &tree_right).unwrap();
+    // Both containers sit at depth 1 == max_depth, so neither may expand and
+    // both report the same kind of unsupported node.
+    let archive_note = unsupported_note(&archive.root);
+    let tree_note = unsupported_note(&tree.root);
+    assert!(
+        archive_note.contains("nested archive depth limit reached"),
+        "{archive_note}"
+    );
+    assert!(
+        tree_note.contains("directory depth limit reached"),
+        "{tree_note}"
+    );
+}
+
+fn unsupported_note(node: &diff_core::model::DiffNode) -> String {
+    fn find(node: &diff_core::model::DiffNode) -> Option<String> {
+        match &node.body {
+            DiffBody::Unsupported(info) => Some(info.note.clone()),
+            DiffBody::Directory(diff) => diff.entries.iter().find_map(find),
+            DiffBody::Archive(diff) => diff.entries.iter().find_map(find),
+            _ => None,
+        }
+    }
+    find(node).unwrap_or_default()
+}
+
+fn xar_header(toc: &[u8], toc_uncompressed: u64) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(28 + toc.len());
+    bytes.extend_from_slice(b"xar!");
+    bytes.extend_from_slice(&28u16.to_be_bytes()); // header size
+    bytes.extend_from_slice(&1u16.to_be_bytes()); // version
+    bytes.extend_from_slice(&(toc.len() as u64).to_be_bytes());
+    bytes.extend_from_slice(&toc_uncompressed.to_be_bytes());
+    bytes.extend_from_slice(&1u32.to_be_bytes()); // sha1 checksum
+    bytes.extend_from_slice(toc);
+    bytes
+}
+
+fn zlib_bytes(data: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(data).unwrap();
+    encoder.finish().unwrap()
+}
+
+#[test]
 fn merge_clean_and_conflict() {
     let clean = diff_core::merge::merge_text(b"a\nb\nc\n", b"A\nb\nc\n", b"a\nb\nC\n");
     assert!(clean.clean);

@@ -218,19 +218,16 @@ impl DiffEngine {
         ctx: &mut Ctx,
     ) -> Result<DiffNode> {
         if depth > self.options.max_depth {
-            return Ok(DiffNode::new(
-                label,
-                DiffStatus::Unsupported,
-                DiffBody::Unsupported(UnsupportedInfo {
-                    note: "maximum recursion depth reached".to_string(),
-                }),
-            ));
+            return Ok(depth_limit_node(label, "maximum recursion depth reached"));
         }
 
         let left_meta = fs::metadata(left)?;
         let right_meta = fs::metadata(right)?;
 
         if left_meta.is_dir() && right_meta.is_dir() {
+            if !can_expand(depth, self.options.max_depth) {
+                return Ok(depth_limit_node(label, "directory depth limit reached"));
+            }
             return self.compare_directories(left, right, label, depth, ctx);
         }
 
@@ -477,14 +474,8 @@ impl DiffEngine {
             FileKind::Csv => Ok(self.compare_table_bytes(label, left, right, hint, ctx)),
             FileKind::Image => Ok(self.compare_image_bytes(label, left, right, ctx)),
             FileKind::Gzip => {
-                if depth >= self.options.max_depth {
-                    return Ok(DiffNode::new(
-                        label,
-                        DiffStatus::Unsupported,
-                        DiffBody::Unsupported(UnsupportedInfo {
-                            note: "nested gzip depth limit reached".to_string(),
-                        }),
-                    ));
+                if !can_expand(depth, self.options.max_depth) {
+                    return Ok(depth_limit_node(label, "nested gzip depth limit reached"));
                 }
                 let left_inner = match self.decompress_gzip(left, label, ctx) {
                     Some(data) => data,
@@ -517,14 +508,8 @@ impl DiffEngine {
                 )?)
             }
             FileKind::Zstd => {
-                if depth >= self.options.max_depth {
-                    return Ok(DiffNode::new(
-                        label,
-                        DiffStatus::Unsupported,
-                        DiffBody::Unsupported(UnsupportedInfo {
-                            note: "nested zstd depth limit reached".to_string(),
-                        }),
-                    ));
+                if !can_expand(depth, self.options.max_depth) {
+                    return Ok(depth_limit_node(label, "nested zstd depth limit reached"));
                 }
                 let left_inner = match self.decompress_zstd(left, label, ctx) {
                     Some(data) => data,
@@ -553,14 +538,8 @@ impl DiffEngine {
                 )?)
             }
             FileKind::Bzip2 => {
-                if depth >= self.options.max_depth {
-                    return Ok(DiffNode::new(
-                        label,
-                        DiffStatus::Unsupported,
-                        DiffBody::Unsupported(UnsupportedInfo {
-                            note: "nested bzip2 depth limit reached".to_string(),
-                        }),
-                    ));
+                if !can_expand(depth, self.options.max_depth) {
+                    return Ok(depth_limit_node(label, "nested bzip2 depth limit reached"));
                 }
                 let left_inner = match self.decompress_bzip2(left, label, ctx) {
                     Some(data) => data,
@@ -589,14 +568,8 @@ impl DiffEngine {
                 )?)
             }
             FileKind::Xz => {
-                if depth >= self.options.max_depth {
-                    return Ok(DiffNode::new(
-                        label,
-                        DiffStatus::Unsupported,
-                        DiffBody::Unsupported(UnsupportedInfo {
-                            note: "nested xz depth limit reached".to_string(),
-                        }),
-                    ));
+                if !can_expand(depth, self.options.max_depth) {
+                    return Ok(depth_limit_node(label, "nested xz depth limit reached"));
                 }
                 let left_inner = match self.decompress_xz(left, label, ctx) {
                     Some(data) => data,
@@ -625,14 +598,8 @@ impl DiffEngine {
                 )?)
             }
             FileKind::Lz4 => {
-                if depth >= self.options.max_depth {
-                    return Ok(DiffNode::new(
-                        label,
-                        DiffStatus::Unsupported,
-                        DiffBody::Unsupported(UnsupportedInfo {
-                            note: "nested lz4 depth limit reached".to_string(),
-                        }),
-                    ));
+                if !can_expand(depth, self.options.max_depth) {
+                    return Ok(depth_limit_node(label, "nested lz4 depth limit reached"));
                 }
                 let left_inner = match self.decompress_lz4(left, label, ctx) {
                     Some(data) => data,
@@ -670,13 +637,10 @@ impl DiffEngine {
             | FileKind::Cab
             | FileKind::Xar
             | FileKind::Ar => {
-                if depth >= self.options.max_depth {
-                    return Ok(DiffNode::new(
+                if !can_expand(depth, self.options.max_depth) {
+                    return Ok(depth_limit_node(
                         label,
-                        DiffStatus::Unsupported,
-                        DiffBody::Unsupported(UnsupportedInfo {
-                            note: "nested archive depth limit reached".to_string(),
-                        }),
+                        "nested archive depth limit reached",
                     ));
                 }
                 let result = match kind {
@@ -1745,56 +1709,77 @@ impl DiffEngine {
         depth: usize,
         ctx: &mut Ctx,
     ) -> Result<DiffNode> {
-        let left_files = self.collect_files(left, ctx)?;
-        let right_files = self.collect_files(right, ctx)?;
+        let left_walk = self.collect_files(left, ctx)?;
+        let right_walk = self.collect_files(right, ctx)?;
+        let left_files = &left_walk.files;
+        let right_files = &right_walk.files;
 
-        let keys = merged_keys(&left_files, &right_files);
+        // Directories at the depth limit were not scanned. They are reported
+        // as a single unsupported node each, like an archive at the limit,
+        // instead of silently disappearing from the report.
+        let unscanned: BTreeSet<String> = left_walk
+            .unscanned
+            .iter()
+            .chain(right_walk.unscanned.iter())
+            .cloned()
+            .collect();
+
+        let mut keys = merged_keys(left_files, right_files);
+        keys.extend(unscanned.iter().cloned());
+        keys.sort();
+        keys.dedup();
         let comparison = self.compare_entry_sets(
             label,
             keys,
             self.options.max_dir_entries,
             "directory",
             ctx,
-            |key, local| match (left_files.get(key), right_files.get(key)) {
-                (Some(left_path), Some(right_path)) => {
-                    self.compare_paths(left_path, right_path, key, depth + 1, local)
+            |key, local| {
+                if unscanned.contains(key) {
+                    local.summary.files_compared += 1;
+                    return Ok(depth_limit_node(key, "directory depth limit reached"));
                 }
-                (Some(left_path), None) => {
-                    let kind = detect_file(left_path);
-                    let size = fs::metadata(left_path).map(|m| m.len()).unwrap_or(0);
-                    local.summary.files_removed += 1;
-                    Ok(DiffNode::new(
+                match (left_files.get(key), right_files.get(key)) {
+                    (Some(left_path), Some(right_path)) => {
+                        self.compare_paths(left_path, right_path, key, depth + 1, local)
+                    }
+                    (Some(left_path), None) => {
+                        let kind = detect_file(left_path);
+                        let size = fs::metadata(left_path).map(|m| m.len()).unwrap_or(0);
+                        local.summary.files_removed += 1;
+                        Ok(DiffNode::new(
+                            key,
+                            DiffStatus::Different,
+                            DiffBody::OneSided(OneSidedInfo {
+                                side: PresenceSide::LeftOnly,
+                                kind,
+                                size,
+                            }),
+                        ))
+                    }
+                    (None, Some(right_path)) => {
+                        let kind = detect_file(right_path);
+                        let size = fs::metadata(right_path).map(|m| m.len()).unwrap_or(0);
+                        local.summary.files_added += 1;
+                        Ok(DiffNode::new(
+                            key,
+                            DiffStatus::Different,
+                            DiffBody::OneSided(OneSidedInfo {
+                                side: PresenceSide::RightOnly,
+                                kind,
+                                size,
+                            }),
+                        ))
+                    }
+                    (None, None) => Ok(DiffNode::new(
                         key,
-                        DiffStatus::Different,
-                        DiffBody::OneSided(OneSidedInfo {
-                            side: PresenceSide::LeftOnly,
-                            kind,
-                            size,
+                        DiffStatus::Equal,
+                        DiffBody::Equal(EqualInfo {
+                            kind: FileKind::Unknown,
+                            note: "missing on both sides".to_string(),
                         }),
-                    ))
+                    )),
                 }
-                (None, Some(right_path)) => {
-                    let kind = detect_file(right_path);
-                    let size = fs::metadata(right_path).map(|m| m.len()).unwrap_or(0);
-                    local.summary.files_added += 1;
-                    Ok(DiffNode::new(
-                        key,
-                        DiffStatus::Different,
-                        DiffBody::OneSided(OneSidedInfo {
-                            side: PresenceSide::RightOnly,
-                            kind,
-                            size,
-                        }),
-                    ))
-                }
-                (None, None) => Ok(DiffNode::new(
-                    key,
-                    DiffStatus::Equal,
-                    DiffBody::Equal(EqualInfo {
-                        kind: FileKind::Unknown,
-                        note: "missing on both sides".to_string(),
-                    }),
-                )),
             },
         )?;
 
@@ -2029,7 +2014,15 @@ impl DiffEngine {
                 .read_file(&name)
                 .map_err(|error| DiffError::Invalid(format!("cab {name}: {error}")))?;
             let mut data = Vec::new();
-            reader.read_to_end(&mut data)?;
+            read_bounded(&mut reader, self.options.max_file_bytes, &mut data)
+                .map_err(|error| DiffError::Invalid(format!("cab {name}: {error}")))?;
+            if data.len() as u64 > self.options.max_file_bytes {
+                ctx.warn(format!(
+                    "{}: archive entry {name} exceeds the detailed-diff limit",
+                    display_label(label)
+                ));
+                continue;
+            }
             entries.insert(name, data);
         }
         Ok(entries)
@@ -2075,15 +2068,29 @@ impl DiffEngine {
             .checked_add(toc_compressed)
             .filter(|end| *end <= bytes.len())
             .ok_or_else(|| DiffError::Invalid("xar: truncated table of contents".to_string()))?;
-        let mut xml = String::with_capacity(toc_uncompressed);
-        flate2::read::ZlibDecoder::new(&bytes[header_size..toc_end])
-            .read_to_string(&mut xml)
-            .map_err(|error| DiffError::Invalid(format!("xar toc: {error}")))?;
-        if xml.len() != toc_uncompressed {
-            return Err(DiffError::Invalid(
-                "xar: table of contents size mismatch".to_string(),
-            ));
+        // The header's declared TOC size is untrusted: it bounds only the
+        // pre-allocation (capped), while the actual decompressed bytes are
+        // read through the per-file limit before the size is compared.
+        if toc_uncompressed as u64 > self.options.max_file_bytes {
+            return Err(DiffError::Invalid(format!(
+                "xar: table of contents declares {toc_uncompressed} bytes, above the detailed-diff limit"
+            )));
         }
+        let mut toc = Vec::with_capacity(reserve_for_declared(toc_uncompressed as u64));
+        read_bounded(
+            flate2::read::ZlibDecoder::new(&bytes[header_size..toc_end]),
+            self.options.max_file_bytes,
+            &mut toc,
+        )
+        .map_err(|error| DiffError::Invalid(format!("xar toc: {error}")))?;
+        if toc.len() != toc_uncompressed {
+            return Err(DiffError::Invalid(format!(
+                "xar: table of contents size mismatch ({} != {toc_uncompressed})",
+                toc.len()
+            )));
+        }
+        let xml = String::from_utf8(toc)
+            .map_err(|_| DiffError::Invalid("xar: table of contents is not UTF-8".to_string()))?;
         let heap = &bytes[toc_end..];
 
         #[derive(Default)]
@@ -2232,41 +2239,55 @@ impl DiffEngine {
                             let raw = heap.get(start..end).ok_or_else(|| {
                                 DiffError::Invalid("xar: truncated heap data".to_string())
                             })?;
-                            let data = if frame.encoding.contains("gzip") {
+                            let mut data = Vec::with_capacity(reserve_for_declared(frame.size));
+                            if frame.encoding.contains("gzip") {
                                 // XAR's "application/x-gzip" payloads are zlib
                                 // streams (RFC 1950), matching libarchive/xar.
-                                let mut decoded = Vec::with_capacity(frame.size as usize);
-                                flate2::read::ZlibDecoder::new(raw)
-                                    .read_to_end(&mut decoded)
-                                    .map_err(|error| {
-                                        DiffError::Invalid(format!("xar {path}: {error}"))
-                                    })?;
-                                decoded
+                                read_bounded(
+                                    flate2::read::ZlibDecoder::new(raw),
+                                    self.options.max_file_bytes,
+                                    &mut data,
+                                )
+                                .map_err(|error| {
+                                    DiffError::Invalid(format!("xar {path}: {error}"))
+                                })?;
                             } else if frame.encoding.contains("bzip2") {
-                                let mut decoded = Vec::with_capacity(frame.size as usize);
-                                bzip2::read::BzDecoder::new(raw)
-                                    .read_to_end(&mut decoded)
-                                    .map_err(|error| {
-                                        DiffError::Invalid(format!("xar {path}: {error}"))
-                                    })?;
-                                decoded
+                                read_bounded(
+                                    bzip2::read::BzDecoder::new(raw),
+                                    self.options.max_file_bytes,
+                                    &mut data,
+                                )
+                                .map_err(|error| {
+                                    DiffError::Invalid(format!("xar {path}: {error}"))
+                                })?;
                             } else if frame.encoding.contains("xz") {
-                                let mut decoded = Vec::with_capacity(frame.size as usize);
-                                liblzma::read::XzDecoder::new(raw)
-                                    .read_to_end(&mut decoded)
-                                    .map_err(|error| {
-                                        DiffError::Invalid(format!("xar {path}: {error}"))
-                                    })?;
-                                decoded
+                                read_bounded(
+                                    liblzma::read::XzDecoder::new(raw),
+                                    self.options.max_file_bytes,
+                                    &mut data,
+                                )
+                                .map_err(|error| {
+                                    DiffError::Invalid(format!("xar {path}: {error}"))
+                                })?;
                             } else if frame.encoding.contains("lzma") {
-                                let mut decoded = Vec::with_capacity(frame.size as usize);
-                                lzma_rs::lzma_decompress(&mut &raw[..], &mut decoded).map_err(
+                                // lzma_rs writes through `Write`, so the bound is
+                                // enforced by the destination instead.
+                                let mut output = LimitedBuffer::new(self.options.max_file_bytes);
+                                lzma_rs::lzma_decompress(&mut &raw[..], &mut output).map_err(
                                     |error| DiffError::Invalid(format!("xar {path}: {error}")),
                                 )?;
-                                decoded
+                                data = output.data;
                             } else {
-                                raw.to_vec()
-                            };
+                                data.extend_from_slice(raw);
+                            }
+                            if data.len() as u64 > self.options.max_file_bytes {
+                                ctx.warn(format!(
+                                    "{}: xar entry {} expands beyond the detailed-diff limit",
+                                    display_label(label),
+                                    frame.name
+                                ));
+                                continue;
+                            }
                             if data.len() as u64 != frame.size {
                                 return Err(DiffError::Invalid(format!(
                                     "xar {path}: decoded size mismatch ({} != {})",
@@ -2806,7 +2827,7 @@ impl DiffEngine {
         let mut entries = BTreeMap::new();
 
         for index in 0..total.min(self.options.max_zip_entries) {
-            let (name, size, is_lzma) = {
+            let (name, size, compressed_size, is_lzma) = {
                 let raw = archive
                     .by_index_raw(index)
                     .map_err(|error| DiffError::Invalid(format!("zip entry #{index}: {error}")))?;
@@ -2816,6 +2837,7 @@ impl DiffEngine {
                 (
                     raw.name().replace('\\', "/"),
                     raw.size(),
+                    raw.compressed_size(),
                     matches!(raw.compression(), zip::CompressionMethod::Lzma),
                 )
             };
@@ -2828,13 +2850,30 @@ impl DiffEngine {
             }
 
             let data = if is_lzma {
+                if compressed_size > self.options.max_file_bytes {
+                    ctx.warn(format!(
+                        "{}: archive entry {name} has more compressed bytes than the detailed-diff limit",
+                        display_label(label)
+                    ));
+                    continue;
+                }
                 let mut raw = archive.by_index_raw(index).map_err(|error| {
                     DiffError::Invalid(format!("zip lzma entry #{index}: {error}"))
                 })?;
-                let mut compressed = Vec::new();
-                raw.read_to_end(&mut compressed).map_err(|error| {
-                    DiffError::Invalid(format!("zip lzma entry {name}: {error}"))
-                })?;
+                // The compressed payload is read through the same bound as the
+                // decompressed output; the central-directory size above is only
+                // a hint and is re-checked against what was actually read.
+                let mut compressed = Vec::with_capacity(reserve_for_declared(compressed_size));
+                read_bounded(&mut raw, self.options.max_file_bytes, &mut compressed).map_err(
+                    |error| DiffError::Invalid(format!("zip lzma entry {name}: {error}")),
+                )?;
+                if compressed.len() as u64 > self.options.max_file_bytes {
+                    ctx.warn(format!(
+                        "{}: archive entry {name} exceeds the detailed-diff limit",
+                        display_label(label)
+                    ));
+                    continue;
+                }
                 decode_zip_lzma(&compressed, size, self.options.max_file_bytes).map_err(
                     |error| DiffError::Invalid(format!("zip lzma entry {name}: {error}")),
                 )?
@@ -3007,8 +3046,8 @@ impl DiffEngine {
         builder.build().ok()
     }
 
-    fn collect_files(&self, root: &Path, ctx: &mut Ctx) -> Result<BTreeMap<String, PathBuf>> {
-        let mut files = BTreeMap::new();
+    fn collect_files(&self, root: &Path, ctx: &mut Ctx) -> Result<WalkedFiles> {
+        let mut walked = WalkedFiles::default();
         let walker = walkdir::WalkDir::new(root)
             .follow_links(false)
             .max_depth(self.options.max_depth);
@@ -3016,33 +3055,56 @@ impl DiffEngine {
         for entry in walker {
             match entry {
                 Ok(entry) => {
+                    let is_dir = entry.file_type().is_dir();
+                    if is_dir {
+                        // walkdir does not descend into a directory that sits
+                        // at the depth limit, so its contents are never seen.
+                        if entry.depth() > 0
+                            && entry.depth() >= self.options.max_depth
+                            && let Some(key) = self.relative_key(entry.path(), root, ctx)
+                        {
+                            walked.unscanned.push(key);
+                        }
+                        continue;
+                    }
                     if !entry.file_type().is_file() {
                         continue;
                     }
-                    match entry.path().strip_prefix(root) {
-                        Ok(relative) => {
-                            let relative = relative.to_string_lossy();
-                            let key = if relative.contains('\\') {
-                                relative.replace('\\', "/")
-                            } else {
-                                relative.into_owned()
-                            };
-                            if let Some(excludes) = &ctx.excludes
-                                && excludes.is_match(key.as_str())
-                            {
-                                continue;
-                            }
-                            files.insert(key, entry.path().to_path_buf());
-                        }
-                        Err(_) => continue,
+                    if let Some(key) = self.relative_key(entry.path(), root, ctx) {
+                        walked.files.insert(key, entry.path().to_path_buf());
                     }
                 }
                 Err(err) => ctx.warn(format!("{}: directory walk error: {err}", root.display())),
             }
         }
 
-        Ok(files)
+        Ok(walked)
     }
+
+    /// Normalizes a walked path to the `/`-separated key used in reports and
+    /// applies the exclude patterns; `None` means the entry is excluded.
+    fn relative_key(&self, path: &Path, root: &Path, ctx: &Ctx) -> Option<String> {
+        let relative = path.strip_prefix(root).ok()?;
+        let relative = relative.to_string_lossy();
+        let key = if relative.contains('\\') {
+            relative.replace('\\', "/")
+        } else {
+            relative.into_owned()
+        };
+        if let Some(excludes) = &ctx.excludes
+            && excludes.is_match(key.as_str())
+        {
+            return None;
+        }
+        Some(key)
+    }
+}
+
+#[derive(Default)]
+struct WalkedFiles {
+    files: BTreeMap<String, PathBuf>,
+    /// Directories at the depth limit whose contents were not scanned.
+    unscanned: Vec<String>,
 }
 
 #[derive(Default)]
@@ -3214,6 +3276,51 @@ fn entries_status(entries: &[DiffNode]) -> DiffStatus {
     } else {
         DiffStatus::Equal
     }
+}
+
+/// Depth semantics shared by every recursive path. `depth` is the number of
+/// container levels between the input root (0) and the current node; unpacking
+/// a compressed stream or an archive entry counts as one level, exactly like a
+/// directory.
+///
+/// Leaves (files, archive entries) are compared while `depth <= limit`.
+/// Containers (directories, archives, compressed streams) may only expand
+/// while `depth < limit`, so their children always land at `depth + 1 <= limit`
+/// and a container at the limit reports a single unsupported node instead of
+/// enumerating children that could only be rejected.
+fn can_expand(depth: usize, limit: usize) -> bool {
+    depth < limit
+}
+
+fn depth_limit_node(label: &str, note: &str) -> DiffNode {
+    DiffNode::new(
+        label,
+        DiffStatus::Unsupported,
+        DiffBody::Unsupported(UnsupportedInfo {
+            note: note.to_string(),
+        }),
+    )
+}
+
+/// Reads at most `limit + 1` bytes from `reader` so the caller can tell a
+/// within-limit payload from one that exceeds it. `limit` is either the
+/// configured per-file limit or `UNLIMITED_FILE_BYTES`, which leaves room for
+/// the extra byte.
+fn read_bounded<R: std::io::Read>(
+    reader: R,
+    limit: u64,
+    into: &mut Vec<u8>,
+) -> std::io::Result<usize> {
+    reader.take(limit.saturating_add(1)).read_to_end(into)
+}
+
+/// Pre-allocation for a size declared inside an untrusted file. The declaration
+/// has already been checked against the per-file limit, but under
+/// `--no-file-size-limit` that check is vacuous, so cap the reservation as well.
+const MAX_DECLARED_RESERVE: u64 = 16 * 1024 * 1024;
+
+fn reserve_for_declared(declared: u64) -> usize {
+    declared.min(MAX_DECLARED_RESERVE) as usize
 }
 
 fn decode_zip_lzma(
@@ -3516,3 +3623,7 @@ fn read_chunk<R: Read>(reader: &mut R, buffer: &mut [u8]) -> std::io::Result<usi
     }
     Ok(total)
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/engine.rs"]
+mod tests;

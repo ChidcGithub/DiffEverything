@@ -234,7 +234,7 @@ Repository: https://github.com/ChidcGithub/DiffEverything
 | `--max-file-bytes <BYTES>` / `--no-file-size-limit` | Override or remove the 64 MiB per-file detailed-diff limit; removing it may exhaust memory |
 | `--max-entries <N>` / `--no-entry-limit` | Directory/archive entry limit, or remove it entirely |
 | `--no-limits` | Remove all analysis limits: file size, entries, rows, cells, depth and PDF pages |
-| `--max-depth <N>` | Recursive directory/archive depth limit, default 32 (1..1024) |
+| `--max-depth <N>` | Container nesting limit counted from the input root, for directories, archives and compressed streams; default 32 (1..1024) |
 | **Merge and sync** | |
 | `--base <FILE\|DIR>` | Three-way merge base (a directory base enables directory merge) |
 | `--merge-output <FILE\|DIR>` | Merge output; a directory must be empty or new |
@@ -299,7 +299,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 340 Rust tests (unit + integration + CLI)
+# 346 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -361,6 +361,7 @@ elapsed  7 ms
 - `crates/diff-core/tests/integration.rs` is the single integration-test target; the six case modules are included from `tests/cases/` and no longer produce six separate link steps.
 - The embedded Windows aria2 executable is stored zstd-compressed in the binary (2.07 MiB instead of 5.65 MiB) and decompressed to the temporary directory on first use. Raw binary SHA-256 is recorded in `THIRD_PARTY_LICENSES.md`.
 - Directory and archive entry comparison shares one `Arc<GlobSet>` instead of cloning the matcher per entry, merges sorted key sets linearly, avoids a per-entry result-key clone, and skips progress-message formatting when progress is disabled.
+- Every archive reader reads entries through one shared bounded read (`limit + 1` bytes), including CAB; XAR validates its declared table-of-contents size before allocating and bounds TOC and payload decoding; ZIP LZMA bounds the compressed stream as well as its output. `--max-depth` counts container levels from the input root: leaves compare at `depth <= max_depth`, containers expand only below it, and a directory at the limit is reported as one `directory depth limit reached` node instead of being scanned.
 - Both crates use `#![forbid(unsafe_code)]`.
 - ANSI reports replace C0/C1 control characters (except tab) in untrusted paths and content, preventing terminal escape injection from malicious file contents or archive entry names.
 - The TUI restores cursor, alternate-screen and raw-mode state through an RAII guard, including early errors and unwinding panics.
