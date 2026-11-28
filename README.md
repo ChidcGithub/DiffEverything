@@ -1,6 +1,6 @@
 # DiffEverything
 
-**Current version: 1.2.0 (Toyger)**
+**Current release: 1.2.0 (Toyger)**
 
 A Rust CLI that compares heterogeneous files by normalizing them into one diff tree. It does not replace `diff`; it adds format-aware comparison and multiple report formats.
 
