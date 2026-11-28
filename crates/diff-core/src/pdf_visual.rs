@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PdfVisualOptions {
     pub pdftoppm: PathBuf,
     pub dpi: u32,
@@ -29,6 +29,7 @@ pub struct PdfVisualReport {
     pub report_pdf: PathBuf,
     pub report_overlay_pdf: PathBuf,
     pub report_vector_pdf: PathBuf,
+    pub report_json: PathBuf,
     pub pages: Vec<PdfPageDiff>,
 }
 
@@ -89,6 +90,7 @@ impl PdfVisualReport {
         out.push_str(&format!("report: {}\n", self.report_html.display()));
         out.push_str(&format!("pdf   : {}\n", self.report_pdf.display()));
         out.push_str(&format!("overlay: {}\n", self.report_overlay_pdf.display()));
+        out.push_str(&format!("json   : {}\n", self.report_json.display()));
         out.push_str(&format!("vector : {}\n", self.report_vector_pdf.display()));
         out
     }
@@ -181,8 +183,9 @@ pub fn visual_pdf_diff(
     write_image_pdf(&overlay_images, &report_overlay_pdf)?;
     let report_vector_pdf = output_dir.join("report-vector.pdf");
     write_vector_report(left, &pages, &report_vector_pdf)?;
+    let report_json = output_dir.join("report.json");
 
-    Ok(PdfVisualReport {
+    let report = PdfVisualReport {
         left: left.to_path_buf(),
         right: right.to_path_buf(),
         left_pages,
@@ -196,8 +199,14 @@ pub fn visual_pdf_diff(
         report_pdf,
         report_overlay_pdf,
         report_vector_pdf,
+        report_json: report_json.clone(),
         pages,
-    })
+    };
+    let json = serde_json::to_vec_pretty(&report)
+        .map_err(|error| DiffError::Invalid(format!("pdf visual json: {error}")))?;
+    fs::write(&report_json, json)
+        .map_err(|error| DiffError::Invalid(format!("pdf visual json: {error}")))?;
+    Ok(report)
 }
 
 /// Render PDF pages to PNG files. This is public so OCR can reuse the same

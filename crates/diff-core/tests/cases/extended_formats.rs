@@ -25,6 +25,38 @@ fn structured_count(report: &diff_core::model::DiffReport) -> usize {
     structured(report).changes.len()
 }
 
+fn document_count(report: &diff_core::model::DiffReport) -> usize {
+    match &report.root.body {
+        DiffBody::Document(diff) => {
+            diff.blocks.len() + diff.tables.len() + diff.metadata.len() + diff.media.len()
+        }
+        other => panic!("expected document diff, got {other:?}"),
+    }
+}
+
+fn assert_document_detail_modes(relative_left: &str, relative_right: &str, format: &str) {
+    let report = engine()
+        .compare(&fixture(relative_left), &fixture(relative_right))
+        .unwrap();
+    assert_eq!(report.status, DiffStatus::Different);
+    match &report.root.body {
+        DiffBody::Document(diff) => assert_eq!(diff.format, format),
+        other => panic!("expected {format} document diff, got {other:?}"),
+    }
+    let full = document_count(&report);
+    assert!(
+        full >= 2,
+        "{format}: expected at least two changes, got {full}"
+    );
+    let mut concise = report.clone();
+    diff_core::concise::apply(&mut concise, 10);
+    let brief = document_count(&concise);
+    assert!(
+        brief <= full,
+        "{format}: concise mode increased changes ({brief} vs {full})"
+    );
+}
+
 fn assert_detail_modes(relative_left: &str, relative_right: &str, format: &str) {
     let report = engine()
         .compare(&fixture(relative_left), &fixture(relative_right))
@@ -38,7 +70,7 @@ fn assert_detail_modes(relative_left: &str, relative_right: &str, format: &str) 
     );
 
     let mut concise = report.clone();
-    diff_core::concise::apply(&mut concise);
+    diff_core::concise::apply(&mut concise, 4);
     let brief = structured_count(&concise);
     assert!(
         brief < full,
@@ -147,12 +179,23 @@ fn compares_odt_semantically_and_respects_detail() {
     let report = engine()
         .compare(&fixture("documents/old.odt"), &fixture("documents/new.odt"))
         .unwrap();
-    assert!(structured(&report).changes.iter().any(|change| {
-        change.path == "$.metadata.title"
-            && change.left == Some(Value::String("Old Doc".into()))
-            && change.right == Some(Value::String("New Doc".into()))
-    }));
-    assert_detail_modes("documents/old.odt", "documents/new.odt", "odt");
+    match &report.root.body {
+        DiffBody::Document(diff) => {
+            assert_eq!(diff.format, "odt");
+            assert!(diff.metadata.iter().any(|change| {
+                change.path == "metadata/title"
+                    && change.left.as_deref() == Some("Old Doc")
+                    && change.right.as_deref() == Some("New Doc")
+            }));
+            assert!(
+                diff.blocks
+                    .iter()
+                    .any(|block| block.path.starts_with("body/p["))
+            );
+        }
+        other => panic!("expected ODT document diff, got {other:?}"),
+    }
+    assert_document_detail_modes("documents/old.odt", "documents/new.odt", "odt");
 }
 
 #[test]
@@ -160,13 +203,18 @@ fn compares_odp_semantically_and_respects_detail() {
     let report = engine()
         .compare(&fixture("documents/old.odp"), &fixture("documents/new.odp"))
         .unwrap();
-    assert!(structured(&report).changes.iter().any(|change| {
-        change.path == "$.text"
-            && change.left.is_some()
-            && change.right.is_some()
-            && change.left != change.right
-    }));
-    assert_detail_modes("documents/old.odp", "documents/new.odp", "odp");
+    match &report.root.body {
+        DiffBody::Document(diff) => {
+            assert_eq!(diff.format, "odp");
+            assert!(
+                diff.blocks
+                    .iter()
+                    .any(|block| block.path.starts_with("slide["))
+            );
+        }
+        other => panic!("expected ODP document diff, got {other:?}"),
+    }
+    assert_document_detail_modes("documents/old.odp", "documents/new.odp", "odp");
 }
 
 #[test]
@@ -365,7 +413,7 @@ fn compares_audio_waveform_and_respects_detail() {
     assert!(waveform.changed_windows >= 5);
 
     let mut concise = report.clone();
-    diff_core::concise::apply(&mut concise);
+    diff_core::concise::apply(&mut concise, 4);
     let concise_windows = match &concise.root.body {
         DiffBody::Audio(diff) => diff.waveform.as_ref().expect("waveform").left.len(),
         other => panic!("expected audio diff, got {other:?}"),

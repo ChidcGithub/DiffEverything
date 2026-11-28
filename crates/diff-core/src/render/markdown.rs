@@ -245,6 +245,131 @@ fn render_node(node: &DiffNode, level: usize, out: &mut String) {
             }
             let _ = writeln!(out);
         }
+        DiffBody::Document(diff) => {
+            let _ = writeln!(out, "{heading} {}\n", display_title(&node.label));
+            let _ = writeln!(
+                out,
+                "Document diff: **{}**, {} block(s), {} table(s), {} media change(s){}",
+                diff.format,
+                diff.blocks.len(),
+                diff.tables.len(),
+                diff.media.len(),
+                if diff.truncated { " (truncated)" } else { "" }
+            );
+            for field in &diff.metadata {
+                let _ = writeln!(
+                    out,
+                    "- metadata `{}`: `{}` -> `{}`",
+                    field.path,
+                    field.left.as_deref().unwrap_or("-"),
+                    field.right.as_deref().unwrap_or("-")
+                );
+            }
+            if let Some(visual) = &diff.visual {
+                let _ = writeln!(
+                    out,
+                    "\n**PDF visual diff**: {} pages compared, +{} / -{}, {} changed\n",
+                    visual.pages_compared,
+                    visual.pages_added,
+                    visual.pages_removed,
+                    visual.changed_pages
+                );
+                let _ = writeln!(out, "- HTML: `{}`", visual.report_html);
+                let _ = writeln!(out, "- JSON: `{}`", visual.report_json);
+                for page in visual.pages.iter().filter(|page| page.differing_pixels > 0) {
+                    let _ = writeln!(
+                        out,
+                        "- page {}: {} / {} pixels differ ({:.2}%)",
+                        page.page,
+                        page.differing_pixels,
+                        page.total_pixels,
+                        page.diff_ratio * 100.0
+                    );
+                }
+            }
+            for block in &diff.blocks {
+                let marker = match block.change {
+                    ChangeKind::Added => "+",
+                    ChangeKind::Removed => "-",
+                    ChangeKind::Changed | ChangeKind::Moved => "~",
+                };
+                let moved = block
+                    .moved_from
+                    .as_deref()
+                    .map(|from| format!(" (moved from `{from}`)"))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    out,
+                    "- `{marker}` `{}` [{}]{moved}: {}",
+                    block.path,
+                    block.kind,
+                    truncate_chars(
+                        &match block.change {
+                            ChangeKind::Added => block.right.clone().unwrap_or_default(),
+                            ChangeKind::Removed => block.left.clone().unwrap_or_default(),
+                            ChangeKind::Changed | ChangeKind::Moved => format!(
+                                "{} -> {}",
+                                block.left.as_deref().unwrap_or("-"),
+                                block.right.as_deref().unwrap_or("-")
+                            ),
+                        },
+                        300
+                    )
+                );
+            }
+            for table in &diff.tables {
+                let _ = writeln!(
+                    out,
+                    "- table `{}`: {} changed row(s)",
+                    table.path,
+                    table.table.rows.len()
+                );
+            }
+        }
+        DiffBody::Presentation(diff) => {
+            let _ = writeln!(out, "{heading} {}\n", display_title(&node.label));
+            let _ = writeln!(
+                out,
+                "Presentation diff: **{}**, {} -> {} slide(s), +{} / -{} / moved {}{}",
+                diff.format,
+                diff.left_slides,
+                diff.right_slides,
+                diff.slides_added,
+                diff.slides_removed,
+                diff.slides_moved,
+                if diff.truncated { " (truncated)" } else { "" }
+            );
+            for slide in &diff.slides {
+                let marker = match slide.change {
+                    ChangeKind::Added => "+",
+                    ChangeKind::Removed => "-",
+                    ChangeKind::Changed | ChangeKind::Moved => "~",
+                };
+                let position = slide
+                    .right_index
+                    .or(slide.left_index)
+                    .map(|index| index.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                let _ = writeln!(
+                    out,
+                    "- `{marker}` slide {position} **{}**{}",
+                    slide.title.as_deref().unwrap_or("(untitled)"),
+                    if slide.change == ChangeKind::Moved {
+                        " (moved)"
+                    } else {
+                        ""
+                    }
+                );
+                for shape in &slide.shapes {
+                    let marker = match shape.change {
+                        ChangeKind::Added => "+",
+                        ChangeKind::Removed => "-",
+                        ChangeKind::Changed | ChangeKind::Moved => "~",
+                    };
+                    let _ = writeln!(out, "  - `{marker}` {}", shape.name);
+                }
+            }
+        }
         DiffBody::Table(diff) => {
             let _ = writeln!(out, "{heading} {}\n", display_title(&node.label));
             let _ = writeln!(
@@ -254,7 +379,7 @@ fn render_node(node: &DiffNode, level: usize, out: &mut String) {
                 diff.right_rows,
                 diff.rows
                     .iter()
-                    .filter(|row| row.kind == RowChangeKind::Changed)
+                    .filter(|row| matches!(row.kind, RowChangeKind::Changed | RowChangeKind::Moved))
                     .count(),
                 if diff.truncated { " (truncated)" } else { "" }
             );
@@ -268,11 +393,19 @@ fn render_node(node: &DiffNode, level: usize, out: &mut String) {
                     diff.columns_removed.join(", ")
                 );
             }
+            for column in &diff.columns_moved {
+                let _ = writeln!(
+                    out,
+                    "- Column **{}** moved: {} -> {}",
+                    column.name, column.left_index, column.right_index
+                );
+            }
             for row in &diff.rows {
                 let (marker, verb) = match row.kind {
                     RowChangeKind::Added => ("+", "added"),
                     RowChangeKind::Removed => ("-", "removed"),
                     RowChangeKind::Changed => ("~", "changed"),
+                    RowChangeKind::Moved => ("~", "moved"),
                 };
                 let cells: Vec<String> = row
                     .cells
@@ -313,26 +446,113 @@ fn render_node(node: &DiffNode, level: usize, out: &mut String) {
             for name in &diff.sheets_removed {
                 let _ = writeln!(out, "- `-` sheet **{name}** removed");
             }
-            for sheet in &diff.sheets {
-                if sheet.cells.is_empty() {
-                    continue;
-                }
+            for sheet in &diff.sheets_moved {
                 let _ = writeln!(
                     out,
-                    "\n**Sheet {}** ({}x{} -> {}x{})",
+                    "- `~` sheet **{}** moved: {} -> {}",
+                    sheet.name, sheet.left_index, sheet.right_index
+                );
+            }
+            for rename in &diff.sheets_renamed {
+                let _ = writeln!(
+                    out,
+                    "- `~` sheet **{}** renamed to **{}**",
+                    rename.from, rename.to
+                );
+            }
+            for name in &diff.defined_names {
+                let _ = writeln!(
+                    out,
+                    "- `~` defined name **{}**: `{}` -> `{}`",
+                    name.path,
+                    name.left.as_deref().unwrap_or("-"),
+                    name.right.as_deref().unwrap_or("-")
+                );
+            }
+            for sheet in &diff.sheets {
+                if sheet.cells.is_empty()
+                    && sheet.left_hidden == sheet.right_hidden
+                    && sheet.merges_added.is_empty()
+                    && sheet.merges_removed.is_empty()
+                    && sheet.hidden_dimensions.is_empty()
+                    && sheet.drawings_added.is_empty()
+                    && sheet.drawings_removed.is_empty()
+                    && sheet.chart_changes.is_empty()
+                    && sheet.conditional_formats_added.is_empty()
+                    && sheet.conditional_formats_removed.is_empty()
+                {
+                    continue;
+                }
+                let hidden = if sheet.left_hidden != sheet.right_hidden {
+                    if sheet.right_hidden {
+                        " (hidden on right)"
+                    } else {
+                        " (hidden on left)"
+                    }
+                } else {
+                    ""
+                };
+                let _ = writeln!(
+                    out,
+                    "\n**Sheet {}** ({}x{} -> {}x{}){hidden}",
                     sheet.name,
                     sheet.left_rows,
                     sheet.left_columns,
                     sheet.right_rows,
                     sheet.right_columns
                 );
-                for cell in &sheet.cells {
+                for merge in &sheet.merges_added {
+                    let _ = writeln!(out, "- `+` merge `{merge}`");
+                }
+                for merge in &sheet.merges_removed {
+                    let _ = writeln!(out, "- `-` merge `{merge}`");
+                }
+                for dimension in &sheet.hidden_dimensions {
                     let _ = writeln!(
                         out,
-                        "- `{}`: `{}` -> `{}`",
+                        "- `~` {}: `{}` -> `{}`",
+                        dimension.path,
+                        dimension.left.as_deref().unwrap_or("-"),
+                        dimension.right.as_deref().unwrap_or("-")
+                    );
+                }
+                for drawing in &sheet.drawings_added {
+                    let _ = writeln!(out, "- `+` drawing `{drawing}`");
+                }
+                for drawing in &sheet.drawings_removed {
+                    let _ = writeln!(out, "- `-` drawing `{drawing}`");
+                }
+                for change in &sheet.chart_changes {
+                    let _ = writeln!(
+                        out,
+                        "- `~` {}: `{}` -> `{}`",
+                        change.path,
+                        change.left.as_deref().unwrap_or("-"),
+                        change.right.as_deref().unwrap_or("-")
+                    );
+                }
+                for rule in &sheet.conditional_formats_added {
+                    let _ = writeln!(out, "- `+` conditional format `{rule}`");
+                }
+                for rule in &sheet.conditional_formats_removed {
+                    let _ = writeln!(out, "- `-` conditional format `{rule}`");
+                }
+                for cell in &sheet.cells {
+                    let formulas = match (&cell.left_formula, &cell.right_formula) {
+                        (Some(left), Some(right)) => {
+                            format!(" [formula {left} -> {right}]")
+                        }
+                        (Some(left), None) => format!(" [formula {left}]"),
+                        (None, Some(right)) => format!(" [formula {right}]"),
+                        (None, None) => String::new(),
+                    };
+                    let _ = writeln!(
+                        out,
+                        "- `{}`: `{}` -> `{}`{}",
                         cell.column,
                         cell.left.as_deref().unwrap_or("-"),
-                        cell.right.as_deref().unwrap_or("-")
+                        cell.right.as_deref().unwrap_or("-"),
+                        formulas
                     );
                 }
             }

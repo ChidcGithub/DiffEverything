@@ -1,6 +1,7 @@
 use crate::model::{
-    AudioDiff, BinaryDiff, DiffBody, DiffNode, DiffReport, ImageDiff, NotebookDiff, StructuredDiff,
-    TableDiff, TextDiff, TextHunk, TextLine, TextTag, TokenDiff, TreeDiff, WorkbookDiff,
+    AudioDiff, BinaryDiff, DiffBody, DiffNode, DiffReport, DocumentDiff, ImageDiff, NotebookDiff,
+    PresentationDiff, StructuredDiff, TableDiff, TextDiff, TextHunk, TextLine, TextTag, TokenDiff,
+    TreeDiff, WorkbookDiff,
 };
 use globset::{GlobBuilder, GlobMatcher};
 use std::collections::BTreeMap;
@@ -116,6 +117,8 @@ fn filter_node(node: &mut DiffNode, filter: &ContentFilter, parent_keep_all: boo
         DiffBody::Tree(diff) => filter_tree(diff, filter, keep_all),
         DiffBody::Notebook(diff) => filter_notebook(diff, filter, keep_all),
         DiffBody::Structured(diff) => filter_structured(diff, filter, keep_all),
+        DiffBody::Document(diff) => filter_document(diff, filter, keep_all),
+        DiffBody::Presentation(diff) => filter_presentation(diff, filter, keep_all),
         DiffBody::Table(diff) => filter_table(diff, filter, keep_all),
         DiffBody::Workbook(diff) => filter_workbook(diff, filter, keep_all),
         DiffBody::Image(diff) => filter_image(diff, filter, keep_all),
@@ -325,13 +328,146 @@ fn filter_table(diff: &mut TableDiff, filter: &ContentFilter, keep_all: bool) ->
     matched || keep_all || !filter.has_patterns()
 }
 
+fn filter_document(diff: &mut DocumentDiff, filter: &ContentFilter, keep_all: bool) -> bool {
+    let blocks = select_items(
+        &mut diff.blocks,
+        filter,
+        keep_all,
+        &mut diff.truncated,
+        |block| {
+            format!(
+                "{} {} {:?} {:?}",
+                block.path, block.kind, block.left, block.right
+            )
+        },
+    );
+    let tables = select_items(
+        &mut diff.tables,
+        filter,
+        keep_all,
+        &mut diff.truncated,
+        |table| {
+            format!(
+                "{} {:?}",
+                table.path,
+                table
+                    .table
+                    .rows
+                    .iter()
+                    .map(|row| format!("{:?} {}", row.kind, row.key))
+                    .collect::<Vec<_>>()
+            )
+        },
+    );
+    let media = select_items(
+        &mut diff.media,
+        filter,
+        keep_all,
+        &mut diff.truncated,
+        |media| {
+            format!(
+                "{} {} {:?} {:?}",
+                media.path, media.kind, media.left_size, media.right_size
+            )
+        },
+    );
+    let metadata = select_items(
+        &mut diff.metadata,
+        filter,
+        keep_all,
+        &mut diff.truncated,
+        |field| format!("{} {:?} {:?}", field.path, field.left, field.right),
+    );
+    blocks || tables || media || metadata || keep_all || !filter.has_patterns()
+}
+
+fn filter_presentation(
+    diff: &mut PresentationDiff,
+    filter: &ContentFilter,
+    keep_all: bool,
+) -> bool {
+    let matched = select_items(
+        &mut diff.slides,
+        filter,
+        keep_all,
+        &mut diff.truncated,
+        |slide| {
+            format!(
+                "{} {:?} {:?}",
+                slide.title.as_deref().unwrap_or(""),
+                slide.left_index,
+                slide.right_index
+            )
+        },
+    );
+    let mut any_shape = false;
+    for slide in &mut diff.slides {
+        any_shape |= select_items(
+            &mut slide.shapes,
+            filter,
+            keep_all,
+            &mut diff.truncated,
+            |shape| {
+                format!(
+                    "{} {} {:?} {:?}",
+                    shape.path,
+                    shape.name,
+                    shape.text,
+                    shape.media.as_ref().map(|media| &media.path)
+                )
+            },
+        );
+    }
+    matched || any_shape || keep_all || !filter.has_patterns()
+}
+
 fn filter_workbook(diff: &mut WorkbookDiff, filter: &ContentFilter, keep_all: bool) -> bool {
     diff.sheets_added
         .retain(|name| keep_all || filter.matches(name));
     diff.sheets_removed
         .retain(|name| keep_all || filter.matches(name));
+    diff.sheets_moved
+        .retain(|sheet| keep_all || filter.matches(&sheet.name));
+    diff.sheets_renamed
+        .retain(|rename| keep_all || filter.matches(&rename.from) || filter.matches(&rename.to));
+    diff.defined_names.retain(|name| {
+        keep_all
+            || filter.matches(&name.path)
+            || filter.matches(name.left.as_deref().unwrap_or(""))
+            || filter.matches(name.right.as_deref().unwrap_or(""))
+    });
     let mut any_cells = false;
     for sheet in &mut diff.sheets {
+        sheet
+            .merges_added
+            .retain(|merge| keep_all || filter.matches(merge));
+        sheet
+            .merges_removed
+            .retain(|merge| keep_all || filter.matches(merge));
+        sheet.hidden_dimensions.retain(|dimension| {
+            keep_all
+                || filter.matches(&dimension.path)
+                || filter.matches(dimension.left.as_deref().unwrap_or(""))
+                || filter.matches(dimension.right.as_deref().unwrap_or(""))
+        });
+        sheet
+            .drawings_added
+            .retain(|drawing| keep_all || filter.matches(drawing));
+        sheet
+            .drawings_removed
+            .retain(|drawing| keep_all || filter.matches(drawing));
+        sheet.chart_changes.retain(|change| {
+            keep_all
+                || filter.matches(&change.path)
+                || filter.matches(change.left.as_deref().unwrap_or(""))
+                || filter.matches(change.right.as_deref().unwrap_or(""))
+        });
+        sheet
+            .conditional_formats_added
+            .retain(|rule| keep_all || filter.matches(rule));
+        sheet
+            .conditional_formats_removed
+            .retain(|rule| keep_all || filter.matches(rule));
         let sheet_name = sheet.name.clone();
         let sheet_match = keep_all || filter.matches(&sheet_name);
         if !sheet_match {
@@ -356,10 +492,35 @@ fn filter_workbook(diff: &mut WorkbookDiff, filter: &ContentFilter, keep_all: bo
         );
         any_cells |= matched;
     }
-    diff.sheets.retain(|sheet| !sheet.cells.is_empty());
+    diff.sheets.retain(|sheet| {
+        !sheet.cells.is_empty()
+            || !sheet.merges_added.is_empty()
+            || !sheet.merges_removed.is_empty()
+            || !sheet.hidden_dimensions.is_empty()
+            || !sheet.drawings_added.is_empty()
+            || !sheet.drawings_removed.is_empty()
+            || !sheet.chart_changes.is_empty()
+            || !sheet.conditional_formats_added.is_empty()
+            || !sheet.conditional_formats_removed.is_empty()
+            || sheet.left_hidden != sheet.right_hidden
+    });
+    let any_meta = diff.sheets.iter().any(|sheet| {
+        !sheet.merges_added.is_empty()
+            || !sheet.merges_removed.is_empty()
+            || !sheet.hidden_dimensions.is_empty()
+            || !sheet.drawings_added.is_empty()
+            || !sheet.drawings_removed.is_empty()
+            || !sheet.chart_changes.is_empty()
+            || !sheet.conditional_formats_added.is_empty()
+            || !sheet.conditional_formats_removed.is_empty()
+    });
     any_cells
+        || any_meta
+        || !diff.defined_names.is_empty()
         || !diff.sheets_added.is_empty()
         || !diff.sheets_removed.is_empty()
+        || !diff.sheets_moved.is_empty()
+        || !diff.sheets_renamed.is_empty()
         || keep_all
         || !filter.has_patterns()
 }

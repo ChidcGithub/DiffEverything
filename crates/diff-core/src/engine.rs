@@ -205,6 +205,10 @@ impl ResourceBudget {
 pub struct DiffOptions {
     pub context: usize,
     pub max_hunks: usize,
+    /// Display-only concise cap. It limits how much detail readers build and
+    /// keep, but never changes comparison completeness or exit codes.
+    #[serde(default)]
+    pub concise_limit: Option<usize>,
     pub max_rows: usize,
     pub max_file_bytes: u64,
     pub max_dir_entries: usize,
@@ -212,8 +216,18 @@ pub struct DiffOptions {
     pub max_json_changes: usize,
     pub max_table_rows: usize,
     pub max_workbook_cells: usize,
+    #[serde(default = "default_max_doc_blocks")]
+    pub max_doc_blocks: usize,
+    #[serde(default = "default_max_slides")]
+    pub max_slides: usize,
     pub max_depth: usize,
     pub key_column: Option<String>,
+    #[serde(default)]
+    pub ignore_columns: Vec<String>,
+    #[serde(default)]
+    pub numeric_tolerance: f64,
+    #[serde(default)]
+    pub compare_formulas: bool,
     pub excludes: Vec<String>,
     pub mode: DiffMode,
     pub ignore_comments: bool,
@@ -222,6 +236,10 @@ pub struct DiffOptions {
     #[serde(default)]
     pub image_threshold: f64,
     pub ocr: Option<crate::ocr::OcrOptions>,
+    #[serde(default)]
+    pub pdf_visual: Option<crate::pdf_visual::PdfVisualOptions>,
+    #[serde(default)]
+    pub pdf_visual_output: Option<PathBuf>,
     #[serde(default)]
     pub decompile: Option<DecompileOptions>,
     /// Worker threads for directory/archive entry comparison. 0 uses the
@@ -250,11 +268,20 @@ fn default_max_inflight_bytes() -> u64 {
     DEFAULT_MAX_INFLIGHT_BYTES
 }
 
+fn default_max_doc_blocks() -> usize {
+    10_000
+}
+
+fn default_max_slides() -> usize {
+    2_000
+}
+
 impl Default for DiffOptions {
     fn default() -> Self {
         Self {
             context: 3,
             max_hunks: 200,
+            concise_limit: None,
             max_rows: 200,
             max_file_bytes: 64 * 1024 * 1024,
             max_dir_entries: 10_000,
@@ -262,8 +289,13 @@ impl Default for DiffOptions {
             max_json_changes: 500,
             max_table_rows: 500,
             max_workbook_cells: 5_000,
+            max_doc_blocks: 10_000,
+            max_slides: 2_000,
             max_depth: 32,
             key_column: None,
+            ignore_columns: Vec::new(),
+            numeric_tolerance: 0.0,
+            compare_formulas: false,
             excludes: Vec::new(),
             mode: DiffMode::Text,
             ignore_comments: false,
@@ -271,6 +303,8 @@ impl Default for DiffOptions {
             ignore_case: false,
             image_threshold: 0.0,
             ocr: None,
+            pdf_visual: None,
+            pdf_visual_output: None,
             decompile: None,
             jobs: 4,
             max_expanded_bytes: DEFAULT_MAX_EXPANDED_BYTES,
@@ -529,12 +563,12 @@ impl DiffEngine {
 
         ctx.summary.files_compared += 1;
 
-        if left_bytes == right_bytes {
+        if left_bytes == right_bytes && self.options.pdf_visual.is_none() {
             ctx.summary.files_equal += 1;
             return Ok(equal_node(label, kind, "files are byte-identical"));
         }
 
-        let node = self.compare_bytes_internal(
+        let mut node = self.compare_bytes_internal(
             label,
             &hint,
             &left_bytes,
@@ -544,12 +578,76 @@ impl DiffEngine {
             depth,
             ctx,
         )?;
+        if kind == FileKind::Pdf {
+            self.attach_pdf_visual(&mut node, left, right, label, ctx);
+        }
         if node.status == DiffStatus::Equal {
             ctx.summary.files_equal += 1;
         } else {
             ctx.summary.files_changed += 1;
         }
         Ok(node)
+    }
+
+    fn attach_pdf_visual(
+        &self,
+        node: &mut DiffNode,
+        left: &Path,
+        right: &Path,
+        label: &str,
+        ctx: &mut Ctx,
+    ) {
+        let (Some(options), Some(base_output)) = (
+            self.options.pdf_visual.as_ref(),
+            self.options.pdf_visual_output.as_ref(),
+        ) else {
+            return;
+        };
+        let suffix = label
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect::<String>();
+        let output_dir = if suffix.is_empty() {
+            base_output.clone()
+        } else {
+            base_output.join(suffix)
+        };
+        match crate::pdf_visual::visual_pdf_diff(left, right, &output_dir, options) {
+            Ok(report) => {
+                let DiffBody::Document(document) = &mut node.body else {
+                    ctx.warn(format!(
+                        "{}: PDF visual comparison produced a non-document result",
+                        display_label(label)
+                    ));
+                    return;
+                };
+                document.visual = Some(DocumentVisual {
+                    kind: "pdf".to_string(),
+                    output_dir: report.output_dir.display().to_string(),
+                    report_html: report.report_html.display().to_string(),
+                    report_pdf: report.report_pdf.display().to_string(),
+                    report_json: report.report_json.display().to_string(),
+                    pages_compared: report.pages_compared,
+                    pages_added: report.pages_added,
+                    pages_removed: report.pages_removed,
+                    changed_pages: report.changed_pages,
+                    pages: report
+                        .pages
+                        .iter()
+                        .map(|page| VisualPage {
+                            page: page.page,
+                            differing_pixels: page.differing_pixels,
+                            total_pixels: page.total_pixels,
+                            diff_ratio: page.diff_ratio,
+                        })
+                        .collect(),
+                });
+            }
+            Err(error) => ctx.warn(format!(
+                "{}: PDF visual comparison failed ({error}); text diff is still available",
+                display_label(label)
+            )),
+        }
     }
 
     /// Streaming byte comparison for files above the detailed-diff limit: a
@@ -1331,12 +1429,26 @@ impl DiffEngine {
         } else {
             "csv"
         };
-        match table::compare_tables(
+        let analysis_limit = self.options.max_table_rows;
+        let table_limit = self
+            .options
+            .concise_limit
+            .map(|limit| limit.min(analysis_limit))
+            .unwrap_or(analysis_limit);
+        let display_only = self
+            .options
+            .concise_limit
+            .is_some_and(|limit| limit < analysis_limit);
+        match table::compare_tables_with_options(
             left,
             right,
             format,
-            self.options.key_column.as_deref(),
-            self.options.max_table_rows,
+            &table::TableCompareOptions {
+                key_column: self.options.key_column.as_deref(),
+                ignore_columns: &self.options.ignore_columns,
+                numeric_tolerance: self.options.numeric_tolerance,
+            },
+            table_limit,
         ) {
             Ok(diff) => {
                 let rows_added = diff
@@ -1352,14 +1464,39 @@ impl DiffEngine {
                 let rows_changed = diff
                     .rows
                     .iter()
-                    .filter(|row| row.kind == RowChangeKind::Changed)
+                    .filter(|row| matches!(row.kind, RowChangeKind::Changed | RowChangeKind::Moved))
                     .count();
                 let cells_changed: usize = diff.rows.iter().map(|row| row.cells.len()).sum();
                 ctx.summary.table_rows_added += rows_added;
                 ctx.summary.table_rows_removed += rows_removed;
                 ctx.summary.table_rows_changed += rows_changed;
                 ctx.summary.table_cells_changed += cells_changed;
+                if !diff.duplicate_keys.is_empty() {
+                    let shown = diff
+                        .duplicate_keys
+                        .iter()
+                        .take(10)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    ctx.warn(format!(
+                        "{}: duplicate key value(s) in {}: {shown}; occurrences are compared separately",
+                        display_label(label),
+                        self.options
+                            .key_column
+                            .as_deref()
+                            .unwrap_or("the key column"),
+                    ));
+                }
+                if diff.truncated && !display_only {
+                    ctx.warn(format!(
+                        "{}: table change limit ({}) reached; some rows were not reported",
+                        display_label(label),
+                        self.options.max_table_rows
+                    ));
+                }
 
+                let truncated = diff.truncated && !display_only;
                 let status = if diff.rows.is_empty()
                     && diff.columns_added.is_empty()
                     && diff.columns_removed.is_empty()
@@ -1368,7 +1505,10 @@ impl DiffEngine {
                 } else {
                     DiffStatus::Different
                 };
-                DiffNode::new(label, status, DiffBody::Table(diff))
+                complete_unless(
+                    DiffNode::new(label, status, DiffBody::Table(diff)),
+                    truncated,
+                )
             }
             Err(error) => {
                 ctx.warn(format!(
@@ -1389,19 +1529,69 @@ impl DiffEngine {
         ctx: &mut Ctx,
     ) -> DiffNode {
         let format = spreadsheet_format(hint);
-        match workbook::compare_workbooks(left, right, format, self.options.max_workbook_cells) {
+        let analysis_limit = self.options.max_workbook_cells;
+        let workbook_limit = self
+            .options
+            .concise_limit
+            .map(|limit| limit.min(analysis_limit))
+            .unwrap_or(analysis_limit);
+        let display_only = self
+            .options
+            .concise_limit
+            .is_some_and(|limit| limit < analysis_limit);
+        match workbook::compare_workbooks(
+            left,
+            right,
+            format,
+            workbook_limit,
+            self.options.compare_formulas,
+            &self.options.ignore_columns,
+        ) {
             Ok(diff) => {
                 let cells_changed: usize = diff.sheets.iter().map(|sheet| sheet.cells.len()).sum();
                 ctx.summary.workbook_cells_changed += cells_changed;
+                if !diff.sheets_moved.is_empty() {
+                    ctx.warn(format!(
+                        "{}: worksheet order changed for {} sheet(s)",
+                        display_label(label),
+                        diff.sheets_moved.len()
+                    ));
+                }
+                if diff.truncated && !display_only {
+                    ctx.warn(format!(
+                        "{}: workbook change limit ({}) reached; some cells were not reported",
+                        display_label(label),
+                        self.options.max_workbook_cells
+                    ));
+                }
+                let truncated = diff.truncated && !display_only;
+                let hidden_changed = diff.sheets.iter().any(|sheet| {
+                    sheet.left_hidden != sheet.right_hidden
+                        || !sheet.merges_added.is_empty()
+                        || !sheet.merges_removed.is_empty()
+                        || !sheet.hidden_dimensions.is_empty()
+                        || !sheet.drawings_added.is_empty()
+                        || !sheet.drawings_removed.is_empty()
+                        || !sheet.chart_changes.is_empty()
+                        || !sheet.conditional_formats_added.is_empty()
+                        || !sheet.conditional_formats_removed.is_empty()
+                });
                 let status = if diff.sheets_added.is_empty()
                     && diff.sheets_removed.is_empty()
+                    && diff.sheets_moved.is_empty()
+                    && diff.sheets_renamed.is_empty()
+                    && diff.defined_names.is_empty()
+                    && !hidden_changed
                     && cells_changed == 0
                 {
                     DiffStatus::Equal
                 } else {
                     DiffStatus::Different
                 };
-                DiffNode::new(label, status, DiffBody::Workbook(diff))
+                complete_unless(
+                    DiffNode::new(label, status, DiffBody::Workbook(diff)),
+                    truncated,
+                )
             }
             Err(error) => {
                 ctx.warn(format!(
@@ -1413,14 +1603,215 @@ impl DiffEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn compare_document_bytes(
         &self,
         label: &str,
         left: &[u8],
         right: &[u8],
         kind: FileKind,
+        left_kind: FileKind,
+        right_kind: FileKind,
         ctx: &mut Ctx,
     ) -> DiffNode {
+        if kind == FileKind::DocumentCross {
+            if let Ok(diff) = documents::compare_mixed_documents(
+                left_kind,
+                left,
+                right_kind,
+                right,
+                self.options.max_doc_blocks,
+                self.options.max_table_rows,
+            ) {
+                let status = document_status(&diff);
+                let truncated = diff.truncated;
+                return complete_unless(
+                    DiffNode::new(label, status, DiffBody::Document(diff)),
+                    truncated,
+                );
+            }
+            let left_text = extract_document_text(left_kind, left);
+            let right_text = extract_document_text(right_kind, right);
+            match (left_text, right_text) {
+                (Ok(left_text), Ok(right_text))
+                    if !left_text.trim().is_empty() || !right_text.trim().is_empty() =>
+                {
+                    let format = format!("{}-to-{}", left_kind.label(), right_kind.label());
+                    return self.compare_text_strings(
+                        label,
+                        &left_text,
+                        &right_text,
+                        "extracted text",
+                        "extracted text",
+                        &format,
+                        FileKind::Text,
+                        ctx,
+                    );
+                }
+                _ => {
+                    ctx.warn(format!(
+                        "{}: could not extract cross-format document text; falling back to binary",
+                        display_label(label)
+                    ));
+                    return self.compare_binary_bytes(label, left, right, ctx);
+                }
+            }
+        }
+        if kind == FileKind::Docx {
+            let block_limit = self
+                .options
+                .concise_limit
+                .map(|limit| limit.min(self.options.max_doc_blocks))
+                .unwrap_or(self.options.max_doc_blocks);
+            let table_limit = self
+                .options
+                .concise_limit
+                .map(|limit| limit.min(self.options.max_table_rows))
+                .unwrap_or(self.options.max_table_rows);
+            let display_only = self.options.concise_limit.is_some_and(|limit| {
+                limit < self.options.max_doc_blocks || limit < self.options.max_table_rows
+            });
+            match documents::compare_docx_documents(left, right, block_limit, table_limit) {
+                Ok(diff)
+                    if !diff.blocks.is_empty()
+                        || !diff.tables.is_empty()
+                        || !diff.media.is_empty()
+                        || diff.truncated =>
+                {
+                    if diff.truncated && !display_only {
+                        ctx.warn(format!(
+                            "{}: document block limit ({}) reached; some blocks were not compared",
+                            display_label(label),
+                            self.options.max_doc_blocks
+                        ));
+                    }
+                    let status = document_status(&diff);
+                    let truncated = diff.truncated && !display_only;
+                    return complete_unless(
+                        DiffNode::new(label, status, DiffBody::Document(diff)),
+                        truncated,
+                    );
+                }
+                Ok(_) => ctx.warn(format!(
+                    "{}: DOCX has no comparable blocks; falling back to extracted text",
+                    display_label(label)
+                )),
+                Err(error) => ctx.warn(format!(
+                    "{}: could not parse DOCX structure ({error}); falling back to extracted text",
+                    display_label(label)
+                )),
+            }
+        }
+        if kind == FileKind::Pptx {
+            let slide_limit = self
+                .options
+                .concise_limit
+                .map(|limit| limit.min(self.options.max_slides))
+                .unwrap_or(self.options.max_slides);
+            let table_limit = self
+                .options
+                .concise_limit
+                .map(|limit| limit.min(self.options.max_table_rows))
+                .unwrap_or(self.options.max_table_rows);
+            let display_only = self.options.concise_limit.is_some_and(|limit| {
+                limit < self.options.max_slides || limit < self.options.max_table_rows
+            });
+            match documents::compare_pptx_documents(left, right, slide_limit, table_limit) {
+                Ok(diff) => {
+                    if diff.truncated && !display_only {
+                        ctx.warn(format!(
+                            "{}: slide limit ({}) reached; some slides were not compared",
+                            display_label(label),
+                            self.options.max_slides
+                        ));
+                    }
+                    let status = if diff.slides.is_empty() {
+                        DiffStatus::Equal
+                    } else {
+                        DiffStatus::Different
+                    };
+                    let truncated = diff.truncated && !display_only;
+                    return complete_unless(
+                        DiffNode::new(label, status, DiffBody::Presentation(diff)),
+                        truncated,
+                    );
+                }
+                Err(error) => ctx.warn(format!(
+                    "{}: could not parse PPTX structure ({error}); falling back to extracted text",
+                    display_label(label)
+                )),
+            }
+        }
+
+        if matches!(kind, FileKind::Odt | FileKind::Odp) {
+            let block_limit = self
+                .options
+                .concise_limit
+                .map(|limit| limit.min(self.options.max_doc_blocks))
+                .unwrap_or(self.options.max_doc_blocks);
+            let table_limit = self
+                .options
+                .concise_limit
+                .map(|limit| limit.min(self.options.max_table_rows))
+                .unwrap_or(self.options.max_table_rows);
+            let display_only = self.options.concise_limit.is_some_and(|limit| {
+                limit < self.options.max_doc_blocks || limit < self.options.max_table_rows
+            });
+            match documents::compare_odf_documents(
+                left,
+                right,
+                kind.label(),
+                block_limit,
+                table_limit,
+            ) {
+                Ok(diff) => {
+                    if diff.truncated && !display_only {
+                        ctx.warn(format!(
+                            "{}: document block limit ({}) reached; some blocks were not compared",
+                            display_label(label),
+                            self.options.max_doc_blocks
+                        ));
+                    }
+                    let status = document_status(&diff);
+                    let truncated = diff.truncated && !display_only;
+                    return complete_unless(
+                        DiffNode::new(label, status, DiffBody::Document(diff)),
+                        truncated,
+                    );
+                }
+                Err(error) => ctx.warn(format!(
+                    "{}: could not parse {} structure ({error}); falling back to extracted text",
+                    display_label(label),
+                    kind.label()
+                )),
+            }
+        }
+
+        if kind == FileKind::Pdf {
+            match documents::compare_pdf_documents(left, right) {
+                Ok(diff) => {
+                    let status = document_status(&diff);
+                    return DiffNode::new(label, status, DiffBody::Document(diff));
+                }
+                Err(error) => ctx.warn(format!(
+                    "{}: could not parse PDF pages ({error}); falling back to extracted text",
+                    display_label(label)
+                )),
+            }
+        }
+        if kind == FileKind::Ofd {
+            match documents::compare_ofd_documents(left, right) {
+                Ok(diff) => {
+                    let status = document_status(&diff);
+                    return DiffNode::new(label, status, DiffBody::Document(diff));
+                }
+                Err(error) => ctx.warn(format!(
+                    "{}: could not parse OFD pages ({error}); falling back to extracted text",
+                    display_label(label)
+                )),
+            }
+        }
+
         let (format, left_text, right_text) = match kind {
             FileKind::Pdf => (
                 "pdf",
@@ -3271,8 +3662,6 @@ impl FormatParser for StructuredParser {
             FileKind::Orc,
             FileKind::Rtf,
             FileKind::Eml,
-            FileKind::Odt,
-            FileKind::Odp,
             FileKind::Epub,
             FileKind::Squashfs,
             FileKind::Snap,
@@ -3370,7 +3759,15 @@ struct DocumentParser;
 
 impl FormatParser for DocumentParser {
     fn kinds(&self) -> &'static [FileKind] {
-        &[FileKind::Pdf, FileKind::Ofd, FileKind::Docx, FileKind::Pptx]
+        &[
+            FileKind::Pdf,
+            FileKind::Ofd,
+            FileKind::Docx,
+            FileKind::Pptx,
+            FileKind::Odt,
+            FileKind::Odp,
+            FileKind::DocumentCross,
+        ]
     }
 
     fn name(&self) -> &'static str {
@@ -3383,7 +3780,15 @@ impl FormatParser for DocumentParser {
         args: CompareArgs<'_>,
         ctx: &mut Ctx,
     ) -> Result<DiffNode> {
-        Ok(engine.compare_document_bytes(args.label, args.left, args.right, args.kind, ctx))
+        Ok(engine.compare_document_bytes(
+            args.label,
+            args.left,
+            args.right,
+            args.kind,
+            args.left_kind,
+            args.right_kind,
+            ctx,
+        ))
     }
 }
 
@@ -3909,6 +4314,32 @@ fn depth_limit_node(label: &str, note: &str) -> DiffNode {
 }
 
 /// Marks a container node incomplete when a limit truncated it.
+fn extract_document_text(kind: FileKind, bytes: &[u8]) -> std::result::Result<String, String> {
+    match kind {
+        FileKind::Pdf => documents::extract_pdf_text(bytes),
+        FileKind::Ofd => documents::extract_ofd_text(bytes),
+        FileKind::Docx => documents::extract_docx_text(bytes),
+        FileKind::Pptx => documents::extract_pptx_text(bytes),
+        FileKind::Odt => crate::diff::documents_extra::extract_odt_text(bytes),
+        FileKind::Odp => crate::diff::documents_extra::extract_odp_text(bytes),
+        other => Err(format!("no document text extractor for {}", other.label())),
+    }
+}
+
+fn document_status(diff: &DocumentDiff) -> DiffStatus {
+    let table_changed = diff.tables.iter().any(|table| {
+        !table.table.rows.is_empty()
+            || !table.table.columns_added.is_empty()
+            || !table.table.columns_removed.is_empty()
+    });
+    if diff.metadata.is_empty() && diff.blocks.is_empty() && !table_changed && diff.media.is_empty()
+    {
+        DiffStatus::Equal
+    } else {
+        DiffStatus::Different
+    }
+}
+
 fn complete_unless(node: DiffNode, truncated: bool) -> DiffNode {
     if truncated {
         node.with_completeness(ComparisonCompleteness::Truncated)
@@ -4017,6 +4448,9 @@ fn effective_kind(left: FileKind, right: FileKind) -> FileKind {
     }
     if left.is_structured() && right.is_structured() {
         return FileKind::Structured;
+    }
+    if left.is_document() && right.is_document() {
+        return FileKind::DocumentCross;
     }
     if left.is_textual() && right.is_textual() {
         return FileKind::Text;

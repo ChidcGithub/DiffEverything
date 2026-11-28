@@ -1,46 +1,72 @@
 use crate::model::{DiffBody, DiffNode, DiffReport, TextDiff, TextHunk, TextLine, TextTag};
 use std::collections::BTreeMap;
 
-const MAX_TEXT_LINES: usize = 10;
-const MAX_CHANGES: usize = 4;
-const MAX_CONTAINER_ENTRIES: usize = 16;
-const MAX_ROWS: usize = 2;
-
 /// Compress a report for terminal/brief consumption.
 ///
 /// Concise mode removes unchanged context, drops equal container entries and
 /// caps detail units. Full mode never calls this transform.
-pub fn apply(report: &mut DiffReport) {
-    apply_node(&mut report.root);
+pub fn apply(report: &mut DiffReport, limit: usize) {
+    apply_node(&mut report.root, limit);
 }
 
-fn apply_node(node: &mut DiffNode) {
+fn apply_node(node: &mut DiffNode, limit: usize) {
     match &mut node.body {
-        DiffBody::Text(diff) => concise_text(diff),
+        DiffBody::Text(diff) => concise_text(diff, limit),
         DiffBody::Tokens(diff) => {
             diff.chunks.retain(|chunk| chunk.tag != TextTag::Equal);
-            limit(&mut diff.chunks, MAX_CHANGES, &mut diff.truncated);
+            cap(&mut diff.chunks, limit, &mut diff.truncated);
         }
-        DiffBody::Tree(diff) => limit(&mut diff.chunks, MAX_CHANGES, &mut diff.truncated),
+        DiffBody::Tree(diff) => cap(&mut diff.chunks, limit, &mut diff.truncated),
         DiffBody::Notebook(diff) => {
-            limit(&mut diff.changed_cells, MAX_CHANGES, &mut diff.truncated);
+            cap(&mut diff.changed_cells, limit, &mut diff.truncated);
         }
-        DiffBody::Structured(diff) => limit(&mut diff.changes, MAX_CHANGES, &mut diff.truncated),
-        DiffBody::Table(diff) => limit(&mut diff.rows, MAX_CHANGES, &mut diff.truncated),
+        DiffBody::Structured(diff) => cap(&mut diff.changes, limit, &mut diff.truncated),
+        DiffBody::Document(diff) => {
+            cap(&mut diff.metadata, limit, &mut diff.truncated);
+            cap(&mut diff.blocks, limit, &mut diff.truncated);
+            cap(&mut diff.tables, limit, &mut diff.truncated);
+            cap(&mut diff.media, limit, &mut diff.truncated);
+        }
+        DiffBody::Presentation(diff) => {
+            cap(&mut diff.slides, limit, &mut diff.truncated);
+            for slide in &mut diff.slides {
+                cap(&mut slide.shapes, limit, &mut diff.truncated);
+            }
+        }
+        DiffBody::Table(diff) => cap(&mut diff.rows, limit, &mut diff.truncated),
         DiffBody::Workbook(diff) => {
-            limit(&mut diff.sheets_added, MAX_CHANGES, &mut diff.truncated);
-            limit(&mut diff.sheets_removed, MAX_CHANGES, &mut diff.truncated);
-            limit(&mut diff.sheets, MAX_CHANGES, &mut diff.truncated);
+            cap(&mut diff.sheets_added, limit, &mut diff.truncated);
+            cap(&mut diff.sheets_removed, limit, &mut diff.truncated);
+            cap(&mut diff.sheets_moved, limit, &mut diff.truncated);
+            cap(&mut diff.sheets_renamed, limit, &mut diff.truncated);
+            cap(&mut diff.defined_names, limit, &mut diff.truncated);
+            cap(&mut diff.sheets, limit, &mut diff.truncated);
             for sheet in &mut diff.sheets {
-                limit(&mut sheet.cells, MAX_CHANGES, &mut sheet.truncated);
+                cap(&mut sheet.cells, limit, &mut sheet.truncated);
+                cap(&mut sheet.merges_added, limit, &mut sheet.truncated);
+                cap(&mut sheet.merges_removed, limit, &mut sheet.truncated);
+                cap(&mut sheet.hidden_dimensions, limit, &mut sheet.truncated);
+                cap(&mut sheet.drawings_added, limit, &mut sheet.truncated);
+                cap(&mut sheet.drawings_removed, limit, &mut sheet.truncated);
+                cap(&mut sheet.chart_changes, limit, &mut sheet.truncated);
+                cap(
+                    &mut sheet.conditional_formats_added,
+                    limit,
+                    &mut sheet.truncated,
+                );
+                cap(
+                    &mut sheet.conditional_formats_removed,
+                    limit,
+                    &mut sheet.truncated,
+                );
             }
         }
         DiffBody::Image(diff) => {
-            limit(&mut diff.regions, MAX_CHANGES, &mut diff.regions_truncated);
+            cap(&mut diff.regions, limit, &mut diff.regions_truncated);
         }
         DiffBody::Audio(diff) => {
-            if diff.tags.len() > MAX_CHANGES {
-                diff.tags.truncate(MAX_CHANGES);
+            if diff.tags.len() > limit {
+                diff.tags.truncate(limit);
             }
             if let Some(waveform) = &mut diff.waveform {
                 let windows = waveform.left.len().min(waveform.right.len());
@@ -50,7 +76,7 @@ fn apply_node(node: &mut DiffNode) {
                     if (waveform.left[index] - waveform.right[index]).abs() > 0.01 {
                         left.push(waveform.left[index]);
                         right.push(waveform.right[index]);
-                        if left.len() >= MAX_CHANGES {
+                        if left.len() >= limit {
                             break;
                         }
                     }
@@ -62,22 +88,24 @@ fn apply_node(node: &mut DiffNode) {
                 waveform.right = right;
             }
         }
-        DiffBody::Binary(diff) => limit(&mut diff.rows, MAX_ROWS, &mut diff.truncated),
+        DiffBody::Binary(diff) => cap(&mut diff.rows, limit, &mut diff.truncated),
         DiffBody::Directory(diff) => concise_entries(
             &mut diff.entries,
             &mut diff.total_entries,
             &mut diff.truncated,
+            limit,
         ),
         DiffBody::Archive(diff) => concise_entries(
             &mut diff.entries,
             &mut diff.total_entries,
             &mut diff.truncated,
+            limit,
         ),
         DiffBody::OneSided(_) | DiffBody::Equal(_) | DiffBody::Unsupported(_) => {}
     }
 }
 
-fn concise_text(diff: &mut TextDiff) {
+fn concise_text(diff: &mut TextDiff, limit: usize) {
     let hunks = std::mem::take(&mut diff.hunks);
     let mut flat: Vec<(usize, TextLine)> = Vec::new();
     for (hunk_index, hunk) in hunks.iter().enumerate() {
@@ -87,9 +115,9 @@ fn concise_text(diff: &mut TextDiff) {
             }
         }
     }
-    let cut = flat.len() > MAX_TEXT_LINES;
+    let cut = flat.len() > limit;
     if cut {
-        flat.truncate(MAX_TEXT_LINES);
+        flat.truncate(limit);
         diff.truncated = true;
     }
     let mut grouped: BTreeMap<usize, Vec<TextLine>> = BTreeMap::new();
@@ -140,24 +168,29 @@ fn rebuild_hunk(hunk: &mut TextHunk) {
     hunk.new_len = new_lines.len();
 }
 
-fn concise_entries(entries: &mut Vec<DiffNode>, total_entries: &mut usize, truncated: &mut bool) {
+fn concise_entries(
+    entries: &mut Vec<DiffNode>,
+    total_entries: &mut usize,
+    truncated: &mut bool,
+    limit: usize,
+) {
     let mut kept = Vec::new();
     for mut entry in std::mem::take(entries) {
-        apply_node(&mut entry);
+        apply_node(&mut entry, limit);
         if entry.status != crate::model::DiffStatus::Equal {
             kept.push(entry);
         }
     }
-    let cut = kept.len() > MAX_CONTAINER_ENTRIES;
+    let cut = kept.len() > limit;
     if cut {
-        kept.truncate(MAX_CONTAINER_ENTRIES);
+        kept.truncate(limit);
         *truncated = true;
     }
     *total_entries = kept.len();
     *entries = kept;
 }
 
-fn limit<T>(items: &mut Vec<T>, max: usize, truncated: &mut bool) {
+fn cap<T>(items: &mut Vec<T>, max: usize, truncated: &mut bool) {
     if items.len() > max {
         items.truncate(max);
         *truncated = true;

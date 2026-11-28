@@ -78,7 +78,7 @@ fn report(node: DiffNode) -> DiffReport {
 #[test]
 fn concise_text_drops_equal_context() {
     let mut report = report(text_node());
-    apply(&mut report);
+    apply(&mut report, 10);
     match &report.root.body {
         DiffBody::Text(diff) => {
             assert_eq!(diff.hunks[0].lines.len(), 2);
@@ -88,6 +88,31 @@ fn concise_text_drops_equal_context() {
                     .iter()
                     .all(|line| line.tag != TextTag::Equal)
             );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn custom_limit_caps_changed_lines() {
+    let mut node = text_node();
+    if let DiffBody::Text(diff) = &mut node.body {
+        diff.hunks[0].lines = (0..12)
+            .map(|index| TextLine {
+                tag: TextTag::Insert,
+                old_lineno: None,
+                new_lineno: Some(index + 1),
+                text: format!("line {index}"),
+                spans: Vec::new(),
+            })
+            .collect();
+    }
+    let mut report = report(node);
+    apply(&mut report, 5);
+    match &report.root.body {
+        DiffBody::Text(diff) => {
+            assert!(diff.truncated);
+            assert_eq!(diff.hunks[0].lines.len(), 5);
         }
         other => panic!("{other:?}"),
     }
@@ -114,7 +139,7 @@ fn concise_archive_drops_equal_entries() {
             truncated: false,
         }),
     ));
-    apply(&mut report);
+    apply(&mut report, 10);
     match &report.root.body {
         DiffBody::Archive(diff) => {
             assert_eq!(diff.entries.len(), 1);

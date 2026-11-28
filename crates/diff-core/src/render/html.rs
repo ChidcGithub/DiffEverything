@@ -66,6 +66,14 @@ ul.changes li { margin: 4px 0; overflow-wrap: anywhere; }
 ul.changes li.add { color: var(--add-text); }
 ul.changes li.del { color: var(--del-text); }
 ul.changes li.mod { color: #8a5a00; }
+table.sxs { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 6px 0 18px; }
+table.sxs th, table.sxs td { border: 1px solid var(--border); padding: 7px 9px; vertical-align: top; text-align: left; font-size: 13px; }
+table.sxs th { background: #f0f0eb; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+table.sxs td { white-space: pre-wrap; overflow-wrap: anywhere; }
+table.sxs tr.add td { background: var(--add-bg); }
+table.sxs tr.del td { background: var(--del-bg); }
+table.sxs tr.mod td { background: #fff7df; }
+table.sxs code.path { display: block; margin-bottom: 4px; color: var(--muted); }
 dl.stats { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
 dl.stats dt { color: var(--muted); }
 dl.stats dd { margin: 0; }
@@ -403,6 +411,244 @@ fn render_body(node: &DiffNode, out: &mut String) {
             }
             out.push_str("</ul>\n");
         }
+        DiffBody::Document(diff) => {
+            let _ = writeln!(
+                out,
+                "<p class=\"meta\">{} document · {} block(s) · {} table(s) · {} media change(s){}</p>",
+                esc(&diff.format),
+                diff.blocks.len(),
+                diff.tables.len(),
+                diff.media.len(),
+                if diff.truncated { " · truncated" } else { "" }
+            );
+            out.push_str("<ul class=\"changes\">\n");
+            for field in &diff.metadata {
+                let _ = writeln!(
+                    out,
+                    "<li class=\"mod\"><code>~ {}</code>: {} → {}</li>",
+                    esc(&field.path),
+                    esc(truncate_chars(field.left.as_deref().unwrap_or("-"), 300).as_str()),
+                    esc(truncate_chars(field.right.as_deref().unwrap_or("-"), 300).as_str())
+                );
+            }
+            if let Some(visual) = &diff.visual {
+                let _ = writeln!(
+                    out,
+                    "<h3>PDF visual diff</h3><p class=\"meta\">{} pages compared · +{} / -{} · {} changed</p>",
+                    visual.pages_compared,
+                    visual.pages_added,
+                    visual.pages_removed,
+                    visual.changed_pages
+                );
+                let _ = writeln!(
+                    out,
+                    "<p class=\"meta\">HTML: <code>{}</code> · JSON: <code>{}</code></p>",
+                    esc(&visual.report_html),
+                    esc(&visual.report_json)
+                );
+                out.push_str("<ul class=\"changes\">\n");
+                for page in visual.pages.iter().filter(|page| page.differing_pixels > 0) {
+                    let _ = writeln!(
+                        out,
+                        "<li class=\"mod\"><code>page {}</code>: {} / {} pixels differ ({:.2}%)</li>",
+                        page.page,
+                        page.differing_pixels,
+                        page.total_pixels,
+                        page.diff_ratio * 100.0
+                    );
+                }
+                out.push_str("</ul>\n");
+            }
+            for block in &diff.blocks {
+                let class = match block.change {
+                    ChangeKind::Added => "add",
+                    ChangeKind::Removed => "del",
+                    ChangeKind::Changed | ChangeKind::Moved => "mod",
+                };
+                let marker = match block.change {
+                    ChangeKind::Added => "+",
+                    ChangeKind::Removed => "-",
+                    ChangeKind::Changed | ChangeKind::Moved => "~",
+                };
+                let moved = block
+                    .moved_from
+                    .as_deref()
+                    .map(|from| format!(" (moved from {})", esc(from)))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    out,
+                    "<li class=\"{class}\"><code>{marker} {}</code> [{}]{moved}: {}</li>",
+                    esc(&block.path),
+                    esc(&block.kind),
+                    esc(&truncate_chars(
+                        &match block.change {
+                            ChangeKind::Added => block.right.clone().unwrap_or_default(),
+                            ChangeKind::Removed => block.left.clone().unwrap_or_default(),
+                            ChangeKind::Changed | ChangeKind::Moved => format!(
+                                "{} → {}",
+                                block.left.as_deref().unwrap_or("-"),
+                                block.right.as_deref().unwrap_or("-")
+                            ),
+                        },
+                        500
+                    ))
+                );
+            }
+            out.push_str("</ul>\n");
+            if !diff.blocks.is_empty() {
+                out.push_str(
+                    "<h3>Side-by-side</h3>\n<table class=\"sxs\"><thead><tr><th>LEFT</th><th>RIGHT</th></tr></thead><tbody>\n",
+                );
+                for block in &diff.blocks {
+                    let class = match block.change {
+                        ChangeKind::Added => "add",
+                        ChangeKind::Removed => "del",
+                        ChangeKind::Changed | ChangeKind::Moved => "mod",
+                    };
+                    let _ = writeln!(
+                        out,
+                        "<tr class=\"{class}\"><td><code class=\"path\">{} [{}]</code>{}</td><td><code class=\"path\">{} [{}]</code>{}</td></tr>",
+                        esc(&block.path),
+                        esc(&block.kind),
+                        esc(block.left.as_deref().unwrap_or("-")),
+                        esc(&block.path),
+                        esc(&block.kind),
+                        esc(block.right.as_deref().unwrap_or("-"))
+                    );
+                }
+                out.push_str("</tbody></table>\n");
+            }
+            for table in &diff.tables {
+                let _ = writeln!(
+                    out,
+                    "<h3>Table {}</h3><p class=\"meta\">{} changed row(s)</p>",
+                    esc(&table.path),
+                    table.table.rows.len()
+                );
+            }
+            for media in &diff.media {
+                let _ = writeln!(
+                    out,
+                    "<p class=\"meta\">media {} [{}]: {} → {}</p>",
+                    esc(&media.path),
+                    esc(&media.kind),
+                    media
+                        .left_size
+                        .map(|size| format!("{size} B"))
+                        .unwrap_or_else(|| "-".to_string()),
+                    media
+                        .right_size
+                        .map(|size| format!("{size} B"))
+                        .unwrap_or_else(|| "-".to_string())
+                );
+            }
+        }
+        DiffBody::Presentation(diff) => {
+            let _ = writeln!(
+                out,
+                "<p class=\"meta\">{} presentation · {} → {} slide(s) · +{} / -{} / moved {}{}</p>",
+                esc(&diff.format),
+                diff.left_slides,
+                diff.right_slides,
+                diff.slides_added,
+                diff.slides_removed,
+                diff.slides_moved,
+                if diff.truncated { " · truncated" } else { "" }
+            );
+            for slide in &diff.slides {
+                let class = match slide.change {
+                    ChangeKind::Added => "add",
+                    ChangeKind::Removed => "del",
+                    ChangeKind::Changed | ChangeKind::Moved => "mod",
+                };
+                let title = slide.title.as_deref().unwrap_or("(untitled)");
+                let _ = writeln!(
+                    out,
+                    "<h3 class=\"{class}\">Slide {}{}</h3>",
+                    slide
+                        .right_index
+                        .or(slide.left_index)
+                        .map(|index| index.to_string())
+                        .unwrap_or_else(|| "?".to_string()),
+                    if slide.change == ChangeKind::Moved {
+                        " (moved)"
+                    } else {
+                        ""
+                    }
+                );
+                let _ = writeln!(out, "<p class=\"meta\">{}</p>", esc(title));
+                if !slide.shapes.is_empty() {
+                    out.push_str("<ul class=\"changes\">\n");
+                    for shape in &slide.shapes {
+                        let shape_class = match shape.change {
+                            ChangeKind::Added => "add",
+                            ChangeKind::Removed => "del",
+                            ChangeKind::Changed | ChangeKind::Moved => "mod",
+                        };
+                        let _ = writeln!(
+                            out,
+                            "<li class=\"{shape_class}\"><code>{}</code> [{}]</li>",
+                            esc(&shape.path),
+                            esc(&shape.kind)
+                        );
+                    }
+                    out.push_str("</ul>\n");
+                }
+                if let Some(notes) = &slide.notes {
+                    let changed = notes
+                        .hunks
+                        .iter()
+                        .flat_map(|hunk| &hunk.lines)
+                        .filter(|line| line.tag != TextTag::Equal)
+                        .count();
+                    if changed > 0 {
+                        let _ = writeln!(
+                            out,
+                            "<p class=\"meta\">notes: {} changed line(s)</p>",
+                            changed
+                        );
+                    }
+                }
+            }
+            if !diff.slides.is_empty() {
+                out.push_str(
+                    "<h3>Slide side-by-side</h3>\n<table class=\"sxs\"><thead><tr><th>LEFT</th><th>RIGHT</th></tr></thead><tbody>\n",
+                );
+                for slide in &diff.slides {
+                    let class = match slide.change {
+                        ChangeKind::Added => "add",
+                        ChangeKind::Removed => "del",
+                        ChangeKind::Changed | ChangeKind::Moved => "mod",
+                    };
+                    let left_index = slide
+                        .left_index
+                        .map(|index| index.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    let right_index = slide
+                        .right_index
+                        .map(|index| index.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    let title = slide.title.as_deref().unwrap_or("(untitled)");
+                    let left_notes = slide
+                        .notes
+                        .as_ref()
+                        .map(|notes| text_side(notes, TextTag::Delete))
+                        .unwrap_or_default();
+                    let right_notes = slide
+                        .notes
+                        .as_ref()
+                        .map(|notes| text_side(notes, TextTag::Insert))
+                        .unwrap_or_default();
+                    let _ = writeln!(
+                        out,
+                        "<tr class=\"{class}\"><td><code class=\"path\">slide {left_index}</code>{}</td><td><code class=\"path\">slide {right_index}</code>{}</td></tr>",
+                        esc(&format!("{title}\n{left_notes}")),
+                        esc(&format!("{title}\n{right_notes}"))
+                    );
+                }
+                out.push_str("</tbody></table>\n");
+            }
+        }
         DiffBody::Table(diff) => {
             let _ = writeln!(
                 out,
@@ -412,7 +658,7 @@ fn render_body(node: &DiffNode, out: &mut String) {
                 diff.right_rows,
                 diff.rows
                     .iter()
-                    .filter(|row| row.kind == RowChangeKind::Changed)
+                    .filter(|row| matches!(row.kind, RowChangeKind::Changed | RowChangeKind::Moved))
                     .count(),
                 if diff.truncated { " · truncated" } else { "" }
             );
@@ -430,12 +676,22 @@ fn render_body(node: &DiffNode, out: &mut String) {
                     esc(&diff.columns_removed.join(", "))
                 );
             }
+            for column in &diff.columns_moved {
+                let _ = writeln!(
+                    out,
+                    "<p class=\"meta\">Column {} moved: {} → {}</p>",
+                    esc(&column.name),
+                    column.left_index,
+                    column.right_index
+                );
+            }
             out.push_str("<ul class=\"changes\">\n");
             for row in &diff.rows {
                 let (class, marker, verb) = match row.kind {
                     RowChangeKind::Added => ("add", "+", "added"),
                     RowChangeKind::Removed => ("del", "-", "removed"),
                     RowChangeKind::Changed => ("mod", "~", "changed"),
+                    RowChangeKind::Moved => ("mod", "~", "moved"),
                 };
                 let cells: Vec<String> = row
                     .cells
@@ -485,14 +741,59 @@ fn render_body(node: &DiffNode, out: &mut String) {
                     esc(name)
                 );
             }
-            out.push_str("</ul>\n");
-            for sheet in &diff.sheets {
-                if sheet.cells.is_empty() {
-                    continue;
-                }
+            for sheet in &diff.sheets_moved {
                 let _ = writeln!(
                     out,
-                    "<h3>Sheet {} ({}x{} → {}x{})</h3>",
+                    "<li class=\"move\"><code>~ sheet {}</code> moved: {} → {}</li>",
+                    esc(&sheet.name),
+                    sheet.left_index,
+                    sheet.right_index
+                );
+            }
+            for rename in &diff.sheets_renamed {
+                let _ = writeln!(
+                    out,
+                    "<li class=\"move\"><code>~ sheet {}</code> renamed to {}</li>",
+                    esc(&rename.from),
+                    esc(&rename.to)
+                );
+            }
+            for name in &diff.defined_names {
+                let _ = writeln!(
+                    out,
+                    "<li class=\"mod\"><code>~ defined name {}</code>: {} → {}</li>",
+                    esc(&name.path),
+                    esc(name.left.as_deref().unwrap_or("-")),
+                    esc(name.right.as_deref().unwrap_or("-"))
+                );
+            }
+            out.push_str("</ul>\n");
+            for sheet in &diff.sheets {
+                if sheet.cells.is_empty()
+                    && sheet.left_hidden == sheet.right_hidden
+                    && sheet.merges_added.is_empty()
+                    && sheet.merges_removed.is_empty()
+                    && sheet.hidden_dimensions.is_empty()
+                    && sheet.drawings_added.is_empty()
+                    && sheet.drawings_removed.is_empty()
+                    && sheet.chart_changes.is_empty()
+                    && sheet.conditional_formats_added.is_empty()
+                    && sheet.conditional_formats_removed.is_empty()
+                {
+                    continue;
+                }
+                let hidden = if sheet.left_hidden != sheet.right_hidden {
+                    if sheet.right_hidden {
+                        " · hidden on right"
+                    } else {
+                        " · hidden on left"
+                    }
+                } else {
+                    ""
+                };
+                let _ = writeln!(
+                    out,
+                    "<h3>Sheet {} ({}x{} → {}x{}){hidden}</h3>",
                     esc(&sheet.name),
                     sheet.left_rows,
                     sheet.left_columns,
@@ -500,16 +801,91 @@ fn render_body(node: &DiffNode, out: &mut String) {
                     sheet.right_columns
                 );
                 out.push_str("<ul class=\"changes\">\n");
-                for cell in &sheet.cells {
+                for merge in &sheet.merges_added {
+                    let _ = writeln!(out, "<li class=\"add\"><code>+ merge {merge}</code></li>");
+                }
+                for merge in &sheet.merges_removed {
+                    let _ = writeln!(out, "<li class=\"del\"><code>- merge {merge}</code></li>");
+                }
+                for dimension in &sheet.hidden_dimensions {
                     let _ = writeln!(
                         out,
-                        "<li class=\"mod\"><code>{}</code>: <code>{}</code> → <code>{}</code></li>",
+                        "<li class=\"mod\"><code>{}</code>: {} → {}</li>",
+                        esc(&dimension.path),
+                        esc(dimension.left.as_deref().unwrap_or("-")),
+                        esc(dimension.right.as_deref().unwrap_or("-"))
+                    );
+                }
+                for drawing in &sheet.drawings_added {
+                    let _ = writeln!(
+                        out,
+                        "<li class=\"add\"><code>+ drawing {drawing}</code></li>"
+                    );
+                }
+                for drawing in &sheet.drawings_removed {
+                    let _ = writeln!(
+                        out,
+                        "<li class=\"del\"><code>- drawing {drawing}</code></li>"
+                    );
+                }
+                for change in &sheet.chart_changes {
+                    let _ = writeln!(
+                        out,
+                        "<li class=\"mod\"><code>~ {}</code>: {} → {}</li>",
+                        esc(&change.path),
+                        esc(change.left.as_deref().unwrap_or("-")),
+                        esc(change.right.as_deref().unwrap_or("-"))
+                    );
+                }
+                for rule in &sheet.conditional_formats_added {
+                    let _ = writeln!(
+                        out,
+                        "<li class=\"add\"><code>+ conditional format</code> {}</li>",
+                        esc(rule)
+                    );
+                }
+                for rule in &sheet.conditional_formats_removed {
+                    let _ = writeln!(
+                        out,
+                        "<li class=\"del\"><code>- conditional format</code> {}</li>",
+                        esc(rule)
+                    );
+                }
+                for cell in &sheet.cells {
+                    let formulas = match (&cell.left_formula, &cell.right_formula) {
+                        (Some(left), Some(right)) => {
+                            format!(" [formula {left} → {right}]")
+                        }
+                        (Some(left), None) => format!(" [formula {left}]"),
+                        (None, Some(right)) => format!(" [formula {right}]"),
+                        (None, None) => String::new(),
+                    };
+                    let _ = writeln!(
+                        out,
+                        "<li class=\"mod\"><code>{}</code>: <code>{}</code> → <code>{}</code>{}</li>",
                         esc(&cell.column),
                         esc(cell.left.as_deref().unwrap_or("-")),
-                        esc(cell.right.as_deref().unwrap_or("-"))
+                        esc(cell.right.as_deref().unwrap_or("-")),
+                        esc(&formulas)
                     );
                 }
                 out.push_str("</ul>\n");
+                if !sheet.cells.is_empty() {
+                    out.push_str(
+                        "<h3>Cell side-by-side</h3>\n<table class=\"sxs\"><thead><tr><th>LEFT</th><th>RIGHT</th></tr></thead><tbody>\n",
+                    );
+                    for cell in &sheet.cells {
+                        let _ = writeln!(
+                            out,
+                            "<tr class=\"mod\"><td><code class=\"path\">{}</code>{}</td><td><code class=\"path\">{}</code>{}</td></tr>",
+                            esc(&cell.column),
+                            esc(cell.left.as_deref().unwrap_or("-")),
+                            esc(&cell.column),
+                            esc(cell.right.as_deref().unwrap_or("-"))
+                        );
+                    }
+                    out.push_str("</tbody></table>\n");
+                }
             }
         }
         DiffBody::Image(diff) => {
@@ -804,6 +1180,16 @@ fn render_entry(entry: &DiffNode, out: &mut String) {
     }
 }
 
+fn text_side(diff: &TextDiff, tag: TextTag) -> String {
+    diff.hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .filter(|line| line.tag == tag)
+        .map(|line| line.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn body_kind_label(body: &DiffBody) -> &'static str {
     match body {
         DiffBody::Text(_) => "text",
@@ -821,6 +1207,8 @@ fn body_kind_label(body: &DiffBody) -> &'static str {
             "html" => "html",
             _ => "structured",
         },
+        DiffBody::Document(_) => "document",
+        DiffBody::Presentation(_) => "presentation",
         DiffBody::Table(_) => "table",
         DiffBody::Workbook(_) => "workbook",
         DiffBody::Notebook(_) => "notebook",

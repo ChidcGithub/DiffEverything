@@ -40,6 +40,42 @@ fn aligns_columns_by_name() {
 }
 
 #[test]
+fn decodes_bom_and_keeps_duplicate_keys() {
+    let left = b"\xEF\xBB\xBFid,name\n1,Alice\n1,Alice2\n";
+    let right = b"id,name\n1,Alice\n1,Alicia\n";
+    let diff = compare_tables(left, right, "csv", Some("id"), 100).unwrap();
+    assert_eq!(diff.duplicate_keys, vec!["1".to_string()]);
+    let row = diff
+        .rows
+        .iter()
+        .find(|row| row.key == "1#2")
+        .expect("second occurrence should be compared");
+    assert_eq!(row.kind, RowChangeKind::Changed);
+    assert_eq!(row.cells[0].column, "name");
+    assert_eq!(row.cells[0].left.as_deref(), Some("Alice2"));
+    assert_eq!(row.cells[0].right.as_deref(), Some("Alicia"));
+}
+
+#[test]
+fn aligns_inserted_rows_without_shifting_later_rows() {
+    let left = b"id,name\n1,Alice\n2,Bob\n3,Carol\n";
+    let right = b"id,name\n0,Zoe\n1,Alice\n2,Bob\n3,Carol\n";
+    let diff = compare_tables(left, right, "csv", None, 100).unwrap();
+    assert_eq!(diff.rows.len(), 1, "{:?}", diff.rows);
+    assert_eq!(diff.rows[0].kind, RowChangeKind::Added);
+    assert_eq!(diff.rows[0].key, "row 1");
+}
+
+#[test]
+fn reports_column_moves() {
+    let left = b"id,name,age\n1,Alice,30\n";
+    let right = b"name,id,age\nAlice,1,30\n";
+    let diff = compare_tables(left, right, "csv", None, 100).unwrap();
+    assert!(diff.rows.is_empty(), "{:?}", diff.rows);
+    assert_eq!(diff.columns_moved.len(), 1, "{:?}", diff.columns_moved);
+}
+
+#[test]
 fn handles_tsv() {
     let left = b"id\tname\n1\tAlice\n";
     let right = b"id\tname\n1\tAlicia\n";

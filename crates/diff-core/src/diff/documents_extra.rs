@@ -19,6 +19,23 @@ pub fn parse_odp(bytes: &[u8]) -> Result<Value, String> {
     parse_odf(bytes, "odp")
 }
 
+pub fn extract_odt_text(bytes: &[u8]) -> Result<String, String> {
+    extract_odf_text(bytes, "odt")
+}
+
+pub fn extract_odp_text(bytes: &[u8]) -> Result<String, String> {
+    extract_odf_text(bytes, "odp")
+}
+
+fn extract_odf_text(bytes: &[u8], format: &str) -> Result<String, String> {
+    let value = parse_odf(bytes, format)?;
+    Ok(value
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string())
+}
+
 fn parse_odf(bytes: &[u8], format: &str) -> Result<Value, String> {
     let files = unzip(bytes)?;
     let content = files

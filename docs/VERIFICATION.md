@@ -3,8 +3,35 @@
 ## Local Environment
 
 - Windows / PowerShell
-- Rust 1.97.1 (project MSRV 1.88)
+- Rust 1.100.1 (project MSRV 1.88)
 - Architecture: `diff-core` library + `diff-everything` CLI
+
+## Verification (v1.2.0 - Toyger, unreleased)
+
+The 1.2.0 work adds structured document, presentation and spreadsheet comparison:
+
+- `DocumentDiff` / `PresentationDiff` bodies with stable `page[n]`, `body/p[n]`, `body/tbl[n]`, `slide[n]` and `shape[name]` paths.
+- DOCX block/table/header/footer/note/comment parsing, precise run/paragraph font metrics and media hashes.
+- PPTX presentation-order slides, shape text/tables/media/notes, shape geometry, exact run font metrics, layout references and hidden-slide state.
+- ODT/ODP paragraph/heading/table/slide block parsing with metadata and media hashes.
+- PDF/OFD page alignment so inserted or moved pages do not shift later pages; PDF metadata, page sizes and positioned text blocks are compared.
+- Workbook sheet order, rename, hidden state, merged ranges, hidden rows/columns, defined names, drawing references, chart XML hashes, conditional-formatting rules with expanded dxf font/fill/border details, cached values and optional formulas; row insertion/deletion alignment.
+- `--pdf-visual` artifacts are summarized in `DocumentDiff.visual` and rendered in ANSI/JSON/HTML, while HTML/PNG/PDF/`report.json` files remain available.
+- Cross-format PDF↔DOCX/ODT/PPTX/ODP and DOCX↔ODT/PPTX↔ODP comparisons normalize to block paths; remaining mixed document pairs use extracted text.
+- HTML reports include side-by-side document, slide and workbook-cell views.
+- Concise detail is capped during comparison (`--detail N`, default 10) for text hunks, table rows, workbook cells, document blocks and slides; the cap is display-only and does not change completeness or exit codes.
+- CSV/TSV BOM and legacy-encoding decoding, duplicate-key handling, LCS row alignment, ignored columns and numeric tolerance.
+- Document, slide, table and workbook truncation propagation to `ComparisonCompleteness`; `--max-entries` now covers directory, archive, document and slide item limits.
+
+Verification performed locally before the single final commit:
+
+```text
+cargo fmt --all -- --check               passed
+cargo clippy --workspace --all-targets -- -D warnings  passed
+cargo test --workspace                  passed: 12 + 79 + 173 + 118 = 382 tests
+```
+
+Manual CLI checks passed for DOCX block paths and paragraph/run font metrics, PPTX slide/shape ordering, shape geometry/font metrics and hidden slides, ODT/ODP block paths and metadata, PDF page/block positions and metadata, PDF↔DOCX/ODT and DOCX↔ODT/PPTX↔ODP mixed block mapping, XLSX sheet handling and conditional formatting, CSV row insertion alignment, duplicate keys, ignored columns with numeric tolerance, JSON/HTML document bodies, and HTML side-by-side views. The visual PDF test also validated `report.json` and the integrated `visual` JSON. The full `cargo test --release` run and repository smoke suite are left to CI after the single final commit.
 
 ## Release Verification (v1.1.1 - Toyger)
 

@@ -454,6 +454,30 @@ fn directory_scan_at_the_exact_entry_limit_is_complete() {
 }
 
 #[test]
+fn table_change_limit_marks_the_comparison_incomplete() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left.csv");
+    let right = dir.path().join("right.csv");
+    fs::write(&left, "id,name\n1,Alice\n2,Bob\n3,Carol\n").unwrap();
+    fs::write(&right, "id,name\n1,Alicia\n2,Robert\n3,Caroline\n").unwrap();
+    let options = DiffOptions {
+        max_table_rows: 1,
+        ..DiffOptions::default()
+    };
+    let report = DiffEngine::new(options).compare(&left, &right).unwrap();
+    assert_eq!(report.status, DiffStatus::Different);
+    assert_eq!(report.completeness, ComparisonCompleteness::Truncated);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("table change limit")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
 fn expanded_bytes_budget_limits_nested_archives() {
     let dir = tempdir().unwrap();
     // The inner archives differ, so the outer files are not byte-identical and

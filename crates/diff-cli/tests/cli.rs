@@ -245,6 +245,22 @@ fn concise_detail_suppresses_equal_context() {
         concise_text.lines().count() < full_text.lines().count(),
         "concise should be shorter"
     );
+
+    let custom = run_str(&[old, new, "--no-color", "--detail", "1"]);
+    assert_eq!(custom.status.code(), Some(1), "{}", stderr(&custom));
+    assert!(
+        stdout(&custom).contains("-old-value"),
+        "{}",
+        stdout(&custom)
+    );
+
+    let invalid = run_str(&[old, new, "--detail", "0"]);
+    assert_eq!(invalid.status.code(), Some(2), "{}", stderr(&invalid));
+    assert!(
+        stderr(&invalid).contains("positive number"),
+        "{}",
+        stderr(&invalid)
+    );
 }
 
 fn pe_with_section_name(bytes: &[u8], name: &[u8; 8]) -> Vec<u8> {
@@ -1463,12 +1479,12 @@ fn compares_extended_formats_from_cli() {
         (
             "fixtures/documents/old.odt",
             "fixtures/documents/new.odt",
-            "ODT",
+            "odt",
         ),
         (
             "fixtures/documents/old.odp",
             "fixtures/documents/new.odp",
-            "ODP",
+            "odp",
         ),
         (
             "fixtures/documents/old.epub",
@@ -1619,12 +1635,73 @@ fn help_is_grouped_and_includes_examples() {
 }
 
 #[test]
+fn concise_limit_is_applied_during_comparison_and_stays_display_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("old.csv");
+    let new = dir.path().join("new.csv");
+    let mut old_text = String::from("id,value\n");
+    let mut new_text = String::from("id,value\n");
+    for index in 0..20 {
+        old_text.push_str(&format!("{index},old-{index}\n"));
+        new_text.push_str(&format!("{index},new-{index}\n"));
+    }
+    std::fs::write(&old, old_text).unwrap();
+    std::fs::write(&new, new_text).unwrap();
+
+    let output = run_str(&[
+        old.to_str().unwrap(),
+        new.to_str().unwrap(),
+        "--detail",
+        "5",
+        "--format",
+        "json",
+        "--no-progress",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["completeness"], "complete", "{report:#}");
+    assert_eq!(report["root"]["body"]["truncated"], true, "{report:#}");
+    assert_eq!(
+        report["root"]["body"]["rows"].as_array().unwrap().len(),
+        5,
+        "{report:#}"
+    );
+}
+
+#[test]
+fn html_side_by_side_views_for_documents_and_slides() {
+    let docx = run_str(&[
+        fixture("docs/old.docx").to_str().unwrap(),
+        fixture("docs/new.docx").to_str().unwrap(),
+        "--format",
+        "html",
+        "--no-progress",
+    ]);
+    assert_eq!(docx.status.code(), Some(1), "{}", stderr(&docx));
+    assert!(stdout(&docx).contains("Side-by-side"), "{}", stdout(&docx));
+
+    let pptx = run_str(&[
+        fixture("docs/old.pptx").to_str().unwrap(),
+        fixture("docs/new.pptx").to_str().unwrap(),
+        "--format",
+        "html",
+        "--no-progress",
+    ]);
+    assert_eq!(pptx.status.code(), Some(1), "{}", stderr(&pptx));
+    assert!(
+        stdout(&pptx).contains("Slide side-by-side"),
+        "{}",
+        stdout(&pptx)
+    );
+}
+
+#[test]
 fn version_reports_codename_and_build_info() {
     let long = run_str(&["--version"]);
     assert_eq!(long.status.code(), Some(0), "{}", stderr(&long));
     let text = stdout(&long);
     for field in [
-        "1.1.1 (Toyger)",
+        "1.2.0 (Toyger)",
         "Commit:",
         "Build:",
         "Rust:",
@@ -1637,7 +1714,7 @@ fn version_reports_codename_and_build_info() {
 
     let short = run_str(&["-V"]);
     assert_eq!(short.status.code(), Some(0), "{}", stderr(&short));
-    assert_eq!(stdout(&short).trim(), "diff-everything 1.1.1 (Toyger)");
+    assert_eq!(stdout(&short).trim(), "diff-everything 1.2.0 (Toyger)");
 }
 
 #[test]
@@ -2184,6 +2261,8 @@ fn git_history_compares_commits_with_concise_and_full_detail() {
         left.to_str().unwrap(),
         right.to_str().unwrap(),
         "--git-history",
+        "--detail",
+        "4",
         "--format",
         "json",
         "--no-progress",
@@ -2637,7 +2716,30 @@ fn pdf_visual_diff_when_pdftoppm_is_available() {
     let text = stdout(&output);
     assert!(text.contains("PDF visual diff"), "{text}");
     assert!(text.contains("page 1:"), "{text}");
+    let json_output_dir = dir.path().join("pdf-visual-json");
+    let json = run_str(&[
+        fixture("pdf/old.pdf").to_str().unwrap(),
+        fixture("pdf/new.pdf").to_str().unwrap(),
+        "--pdf-visual",
+        "--pdftoppm",
+        pdftoppm.to_str().unwrap(),
+        "--pdf-output-dir",
+        json_output_dir.to_str().unwrap(),
+        "--pdf-dpi",
+        "40",
+        "--pdf-max-pages",
+        "1",
+        "--format",
+        "json",
+        "--no-progress",
+    ]);
+    assert_eq!(json.status.code(), Some(1), "{}", stderr(&json));
+    let json_text = stdout(&json);
+    assert!(json_text.contains("\"visual\""), "{json_text}");
+    assert!(json_text.contains("\"report_json\""), "{json_text}");
+    assert!(json_text.contains("\"changed_pages\""), "{json_text}");
     assert!(output_dir.join("report.html").exists());
+    assert!(output_dir.join("report.json").exists());
     assert!(output_dir.join("heatmaps/page-1.png").exists());
     let html = std::fs::read_to_string(output_dir.join("report.html")).unwrap();
     assert!(

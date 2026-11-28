@@ -86,6 +86,8 @@ fn render_node(node: &DiffNode, report: &DiffReport, out: &mut String) {
         }
         DiffBody::Image(_)
         | DiffBody::Structured(_)
+        | DiffBody::Document(_)
+        | DiffBody::Presentation(_)
         | DiffBody::Table(_)
         | DiffBody::Workbook(_)
         | DiffBody::Tokens(_)
@@ -141,6 +143,8 @@ fn body_name(body: &DiffBody) -> &'static str {
         DiffBody::Notebook(_) => "notebook",
         DiffBody::Audio(_) => "audio",
         DiffBody::Structured(_) => "structured",
+        DiffBody::Document(_) => "document",
+        DiffBody::Presentation(_) => "presentation",
         DiffBody::Table(_) => "table",
         DiffBody::Workbook(_) => "workbook",
         DiffBody::Image(_) => "image",

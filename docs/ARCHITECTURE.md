@@ -24,9 +24,9 @@ crates/
 │  │  ├─ tree_diff.rs        recursive tree-sitter syntax-tree node diff
 │  │  ├─ notebook.rs         cell-level diff / three-way merge
 │  │  ├─ structured.rs       semantic JSON/JSON5/YAML/TOML/INI/XML/HTML diff
-│  │  ├─ table.rs            CSV/TSV table diff
-│  │  ├─ workbook.rs         XLSX/XLS/ODS cell diff
-│  │  ├─ documents.rs        PDF/OFD/DOCX/PPTX text extraction
+│  │  ├─ table.rs            CSV/TSV row alignment and table diff
+│  │  ├─ workbook.rs         XLSX/XLS/ODS sheet, formula and cell diff
+│  │  ├─ documents.rs        PDF/OFD/DOCX/PPTX page, block and shape diff
 │  │  ├─ documents_extra.rs  ODT/ODP/EPUB/RTF/EML text and metadata
 │  │  ├─ image.rs            pixel-level diff
 │  │  ├─ media.rs            video metadata/packet hashes and audio RMS waveform
@@ -67,7 +67,7 @@ detect_file / detect_bytes        FileKind
 read + size guard                 Vec<u8> / streaming
     │
     ▼
-normalize                         text / JSON tree / pixels / table / workbook / document text / bytes
+normalize                         text / JSON tree / pixels / table / workbook / document pages, blocks and slides / bytes
     │
     ▼
 compare                           DiffBody
@@ -119,8 +119,10 @@ pub struct DiffNode {
 | `Notebook(NotebookDiff)` | Notebook cell-level diff / moves |
 | `Audio(AudioDiff)` | Audio properties and tags |
 | `Structured(StructuredDiff)` | Path-level JSON/YAML/TOML/INI/XML diff |
-| `Table(TableDiff)` | CSV/TSV row/column/cell diff |
-| `Workbook(WorkbookDiff)` | Worksheet/cell diff |
+| `Document(DocumentDiff)` | Page/block/table/media diff for PDF, OFD, DOCX |
+| `Presentation(PresentationDiff)` | Slide/shape/table/media/notes diff for PPTX |
+| `Table(TableDiff)` | CSV/TSV row/column/cell diff with moves and duplicate keys |
+| `Workbook(WorkbookDiff)` | Sheet/cell/value/formula/visibility diff |
 | `Image(ImageDiff)` | Pixel statistics and bounding boxes |
 | `Binary(BinaryDiff)` | Byte statistics and hex rows |
 | `Directory(DirectoryDiff)` | Directory container |
@@ -196,22 +198,24 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - Mirror modes delete extra files on the target and remove empty directories.
 - `--save-session` stores paths and the full `DiffOptions`; `--load-session` restores them and compares immediately.
 
-## Document Formats
+## Document and Workbook Formats
 
-- PDF: `pdf-extract` for text, `lopdf` for page count; failures fall back to binary.
-- OFD: read `Doc_*/Pages/*/Content.xml` from the ZIP and extract `TextCode` text.
-- Audio: lofty reads format/duration/bitrate/sample rate/channels/tags; metadata is compared and content changes are checked.
-- DOCX: read `word/document.xml`, `header*.xml`, `footer*.xml`, footnotes/endnotes/comments from the ZIP; `quick-xml` extracts paragraph and table text.
-- PPTX: read `ppt/slides/slideN.xml` and `notesSlides/notesSlideN.xml`; extract `<a:t>`.
-- XLSX/XLS/ODS: calamine reads worksheets and cells, compared by address.
-- These formats reuse `TextDiff` / `WorkbookDiff`, so report shapes stay consistent.
+- PDF: `lopdf` extracts text per page and positioned text-show operations (`Tm`/`Td`/`Tj`/`TJ`), producing `page[n]/block[m]` paths with `x,y` positions. Page insertion, removal and moves are aligned by content, so a new page does not shift every later page. PDF Info metadata and page sizes are compared. `pdf-extract` remains the text fallback, and OCR keeps its dedicated path. When `--pdf-visual` is enabled, the engine runs `pdf_visual` after the text node and stores a `DocumentVisual` summary in `DocumentDiff`, so ANSI/JSON/HTML reports carry the visual result while HTML/PNG/PDF/`report.json` artifacts are written to the output directory.
+- OFD: reads `Doc_*/Pages/*/Content.xml` from the ZIP and emits one `page[n]` block per page.
+- DOCX: `word/document.xml` is walked as paragraphs, headings, lists and tables; headers, footers, footnotes, endnotes and comments become separate `header[n]` / `footnote` blocks. Tables use stable `body/tbl[n]` paths. Run/paragraph properties drive precise font metrics (family, half-point size converted to points, bold/italic/underline, color, alignment, line spacing, indents), and media parts under `word/media/` are compared by SHA-256.
+- PPTX: `ppt/presentation.xml` and its relationships determine slide order and hidden state; `slideN.xml` relationships map notes, layout and media. Each slide is compared by shape name, text, table, media hash, geometry, layout reference and run font metrics (size in points, family, bold/italic/underline, color, baseline), with slide add/remove/move reported before shape detail.
+- ODT/ODP: `content.xml` is parsed into paragraph/heading/table blocks and slide-page blocks; metadata and `Pictures/` media are compared alongside the blocks.
+- Cross-format PDF↔DOCX/ODT/PPTX/ODP and DOCX↔ODT/PPTX↔ODP comparisons normalize both sides to block paths before diffing; remaining mixed document pairs fall back to extracted text.
+- XLSX/XLS/ODS: calamine reads sheet order, visibility, cached values and formulas; an XLSX OOXML pass adds merged ranges, hidden rows/columns, defined names, drawing references, chart XML hashes and conditional-formatting rules (range, type, operator, priority, expanded dxf font/fill/border attributes, text, formulas). Rows are aligned by signature before cells are compared, so a single inserted row does not mark every later cell as changed.
+- EPUB/RTF/EML continue to use `StructuredDiff` / `TextDiff`; audio uses `AudioDiff`.
+- Any structural parse failure falls back to extracted text or binary comparison with a warning. Limits that omit pages, blocks, slides, rows or cells propagate `Truncated` completeness.
 
 ## Rendering Strategy
 
 - **ANSI**: local CLI and CI logs. The rich layout (banner, aligned input/status/summary block, section rules, colored markers and line-number gutters) is selected automatically for a terminal; `--style rich` forces it and `--style plain` keeps the compact layout for pipes and scripts. `NO_COLOR` / `--no-color` removes colors but preserves the selected layout. The TUI always uses the rich layout.
 - **JSON**: stable machine interface, validated by parsing in CLI tests.
 - **Markdown**: PR comments and document archives.
-- **HTML**: self-contained single file for sharing.
+- **HTML**: self-contained single file for sharing; document blocks, slides and workbook cells get side-by-side tables in addition to compact change lists.
 - **unified**: compatible with `diff`/`patch` workflows.
 - CLI help is grouped by task headings and uses clap styling plus a terminal-width-aware template; examples and exit codes are appended as after-help.
 
@@ -265,11 +269,12 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - ZIP/TAR entries are read in memory with per-entry limits to avoid zip bombs. Every archive reader (ZIP, 7Z, TAR, RPM, CAB, ISO, AR, XAR, CPIO) reads each entry through the same bounded read (`read_bounded`: at most `limit + 1` bytes) and skips entries that exceed the per-file limit. XAR checks the declared table-of-contents size against the limit before reserving memory (and caps the reservation), reads the compressed TOC and payloads through the bound, and ZIP LZMA bounds the compressed stream as well as its output.
 - `max_depth` counts container levels from the input root (depth 0): leaves are compared while `depth <= max_depth`, and every container (directory, archive or compressed stream) expands only while `depth < max_depth`. A directory at the limit is reported as one `directory depth limit reached` node instead of being scanned, matching how archives at the limit are reported.
 - Unpacked data is bounded by a shared `ResourceBudget` (`max_expanded_bytes`, default 1 GiB): every archive reader and decompressor charges the bytes it materializes atomically, so parallel workers cannot race past the cap, and the budget latches when spent. Directory scans stop at the entry limit instead of enumerating trees that cannot be compared anyway. Truncations propagate as `ComparisonCompleteness::Truncated` through `DiffNode::completeness_of()` into `DiffReport.completeness`, and the CLI exits `3` for an equal-but-truncated comparison. Files above the per-file limit are read through `limit + 1`-byte bounded reads, so growth between the metadata check and the read (TOCTOU) cannot push past the limit.
+- Concise detail is a display-only cap (`--detail N`, default 10; `--detail full` disables it). The CLI puts the cap in `DiffOptions.concise_limit`; text hunk collection, table row comparison, workbook cell comparison, document block parsing and slide parsing stop at the effective display cap. Those parsers still compare enough to determine `Different`/`Equal`, but the cap never marks `ComparisonCompleteness::Truncated` or changes the exit code. The final `concise::apply` pass only handles remaining structures and nested lists.
 - The scheduler bounds the parallel work set, not just the thread count: each file task acquires its footprint (left + right size) from an in-flight gate (`max_inflight_bytes`, default 256 MiB, `0` disables) before its contents are read and releases it when the node is built; tasks larger than the budget are clamped and run alone. Entry results are aggregated chunk by chunk (`jobs x 8` keys per chunk, key order preserved) so only a bounded number of finished nodes is resident before their contexts merge.
 - Format dispatch goes through a parser registry: a `FormatParser` trait maps each `FileKind` to one of fourteen parsers (text, structured, notebook, sqlite, executable, dex, font, table, image, compression, archive, document, workbook, binary). Each parser owns its depth gate and reader and charges unpacked bytes through the shared context, so adding a format means implementing the trait and registering it — the dispatcher and resource model stay untouched.
 - Symbolic links are not followed.
 - All limits are exposed through `DiffOptions`. `--max-file-bytes` overrides the 64 MiB per-file detailed-diff limit; `--no-file-size-limit` sets `UNLIMITED_FILE_BYTES` (`u64::MAX / 2`) so the same code paths keep overflow-safe `limit + 1` reads while allowing arbitrarily large real files.
-- `--no-entry-limit` sets directory and archive entry limits to `usize::MAX`. `--no-limits` additionally removes row, hunk, structured-change, table, workbook, depth and PDF page limits; the individual limit flags conflict with it. These options intentionally trade memory/runtime for completeness.
+- `--no-entry-limit` sets directory, archive, document-block and slide limits to `usize::MAX`; `--max-entries` applies the same value to all four. `--no-limits` additionally removes row, hunk, structured-change, table, workbook, depth and PDF page limits; the individual limit flags conflict with it. These options intentionally trade memory/runtime for completeness.
 - `cargo build --release` is the single optimized profile: `opt-level = 3`, thin LTO, four codegen units and symbol stripping. `cargo test --release` reuses the same dependency artifacts, so the shipped binary and the release test run come from one profile. The embedded Windows aria2 binary is zstd-compressed and decompressed on first use.
 - Integration tests use one target (`tests/integration.rs`) with the six case modules under `tests/cases/`; this avoids six independent links of the full dependency graph.
 - Unit tests live outside the source tree in `tests/unit/<source path>.rs` (for example `tests/unit/diff/text.rs` for `src/diff/text.rs`). Each source file mounts its tests with `#[cfg(test)] #[path = "..."] mod tests;`, so they keep private access while `src/` contains no test code.

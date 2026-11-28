@@ -56,10 +56,13 @@ Examples:
   diff-everything old.txt new.txt
   diff-everything left/ right/ --jobs 8 --progress
   diff-everything old.apk new.apk --detail full -y
+  diff-everything old.docx new.docx --detail full
+  diff-everything old.xlsx new.xlsx --compare-formulas
   diff-everything https://host/old.zip https://host/new.zip
   diff-everything repo-a repo-b --git-history --detail full
 
-Exit codes: 0 same, 1 differences or merge conflicts, 2 runtime error.
+Exit codes: 0 same, 1 differences or merge conflicts, 2 runtime error,
+3 equal but the comparison was truncated by a limit.
 Use --style rich for the decorated terminal layout; --style plain keeps the compact layout.";
 
 #[derive(Debug, Parser)]
@@ -116,6 +119,28 @@ struct Cli {
     #[arg(help_heading = "Comparison", long, value_name = "COLUMN")]
     key: Option<String>,
 
+    /// Comma-separated CSV/TSV column names or spreadsheet column letters to ignore
+    #[arg(
+        help_heading = "Comparison",
+        long,
+        value_delimiter = ',',
+        value_name = "COLUMNS"
+    )]
+    ignore_columns: Vec<String>,
+
+    /// Absolute tolerance used when both CSV/TSV cells parse as numbers
+    #[arg(
+        help_heading = "Comparison",
+        long,
+        default_value_t = 0.0,
+        value_name = "N"
+    )]
+    numeric_tolerance: f64,
+
+    /// Also compare spreadsheet formulas (by default only cached values are compared)
+    #[arg(help_heading = "Comparison", long)]
+    compare_formulas: bool,
+
     /// Exclude paths in directory comparisons; may be repeated
     #[arg(help_heading = "Comparison", long = "exclude", value_name = "GLOB")]
     exclude: Vec<String>,
@@ -139,13 +164,13 @@ struct Cli {
     #[arg(help_heading = "Output & display", short, long, value_name = "FILE")]
     output: Option<PathBuf>,
 
-    /// Detail level: concise or full
+    /// Detail level: concise (default 10), full, or a numeric change limit
     #[arg(
         help_heading = "Output & display",
         long,
-        value_enum,
-        default_value_t = DetailMode::Concise,
-        value_name = "MODE"
+        value_parser = parse_detail,
+        default_value = "concise",
+        value_name = "N|concise|full"
     )]
     detail: DetailMode,
 
@@ -255,11 +280,11 @@ struct Cli {
     #[arg(help_heading = "Limits", long, conflicts_with = "max_file_bytes")]
     no_file_size_limit: bool,
 
-    /// Maximum entries in a directory or archive
+    /// Maximum entries in a directory, archive, document or presentation
     #[arg(help_heading = "Limits", long, value_name = "N")]
     max_entries: Option<usize>,
 
-    /// Remove directory and archive entry limits
+    /// Remove directory, archive, document and presentation entry limits
     #[arg(help_heading = "Limits", long, conflicts_with_all = ["max_entries", "no_limits"])]
     no_entry_limit: bool,
 
@@ -539,10 +564,23 @@ enum Mode {
     Graph,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetailMode {
-    Concise,
+    Concise(usize),
     Full,
+}
+
+fn parse_detail(value: &str) -> std::result::Result<DetailMode, String> {
+    match value {
+        "full" => Ok(DetailMode::Full),
+        "concise" => Ok(DetailMode::Concise(10)),
+        other => other
+            .parse::<usize>()
+            .ok()
+            .filter(|limit| *limit > 0)
+            .map(DetailMode::Concise)
+            .ok_or_else(|| "expected concise, full, or a positive number".to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -614,6 +652,9 @@ fn run() -> Result<i32> {
     if !(0.0..=1.0).contains(&cli.image_threshold) {
         anyhow::bail!("--image-threshold must be between 0 and 1");
     }
+    if !cli.numeric_tolerance.is_finite() || cli.numeric_tolerance < 0.0 {
+        anyhow::bail!("--numeric-tolerance must be a finite non-negative number");
+    }
     if cli.head == Some(0) || cli.last == Some(0) {
         anyhow::bail!("--head and --last must be at least 1");
     }
@@ -649,6 +690,9 @@ fn run() -> Result<i32> {
         max_table_rows: cli.max_table_rows,
         max_workbook_cells: cli.max_workbook_cells,
         key_column: cli.key.clone(),
+        ignore_columns: cli.ignore_columns.clone(),
+        numeric_tolerance: cli.numeric_tolerance,
+        compare_formulas: cli.compare_formulas,
         excludes: cli.exclude.clone(),
         mode: match cli.mode {
             Mode::Text => DiffMode::Text,
@@ -663,6 +707,13 @@ fn run() -> Result<i32> {
         jobs: cli.jobs,
         ..DiffOptions::default()
     };
+    if let DetailMode::Concise(limit) = cli.detail {
+        options.concise_limit = Some(limit);
+        options.max_hunks = options.max_hunks.min(limit);
+        // Keep one extra change so an exact-limit report is not mislabelled as
+        // truncated; concise::apply then trims the display to `limit`.
+        options.max_json_changes = options.max_json_changes.min(limit.saturating_add(1));
+    }
     if cli.no_limits {
         options.max_file_bytes = UNLIMITED_FILE_BYTES;
         options.max_dir_entries = usize::MAX;
@@ -672,6 +723,8 @@ fn run() -> Result<i32> {
         options.max_json_changes = usize::MAX;
         options.max_table_rows = usize::MAX;
         options.max_workbook_cells = usize::MAX;
+        options.max_doc_blocks = usize::MAX;
+        options.max_slides = usize::MAX;
         options.max_depth = usize::MAX;
         options.max_expanded_bytes = UNLIMITED_FILE_BYTES;
         options.max_inflight_bytes = 0;
@@ -697,12 +750,16 @@ fn run() -> Result<i32> {
         if let Some(max_entries) = cli.max_entries {
             options.max_dir_entries = max_entries;
             options.max_zip_entries = max_entries;
+            options.max_doc_blocks = max_entries;
+            options.max_slides = max_entries;
         } else if cli.no_entry_limit {
             options.max_dir_entries = usize::MAX;
             options.max_zip_entries = usize::MAX;
+            options.max_doc_blocks = usize::MAX;
+            options.max_slides = usize::MAX;
             if !cli.quiet {
                 eprintln!(
-                    "warning: directory/archive entry limit disabled; very large inputs may exhaust memory"
+                    "warning: directory/archive/document/slide entry limit disabled; very large inputs may exhaust memory"
                 );
             }
         }
@@ -712,6 +769,19 @@ fn run() -> Result<i32> {
     } else {
         cli.pdf_max_pages
     };
+    if cli.pdf_visual {
+        let pdftoppm = resolve_pdftoppm(cli.pdftoppm.as_deref())?;
+        options.pdf_visual = Some(diff_core::pdf_visual::PdfVisualOptions {
+            pdftoppm,
+            dpi: cli.pdf_dpi,
+            max_pages: pdf_max_pages,
+        });
+        options.pdf_visual_output = Some(
+            cli.pdf_output_dir
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("pdf-visual-output")),
+        );
+    }
 
     let progress =
         if cli.quiet || cli.no_progress || (!cli.progress && !std::io::stderr().is_terminal()) {
@@ -1267,31 +1337,6 @@ fn run() -> Result<i32> {
         anyhow::bail!("--merge-output requires --base");
     }
 
-    if cli.pdf_visual {
-        let pdftoppm = resolve_pdftoppm(cli.pdftoppm.as_deref())?;
-        let output_dir = cli
-            .pdf_output_dir
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("pdf-visual-output"));
-        let visual_options = diff_core::pdf_visual::PdfVisualOptions {
-            pdftoppm,
-            dpi: cli.pdf_dpi,
-            max_pages: pdf_max_pages,
-        };
-        let report =
-            diff_core::pdf_visual::visual_pdf_diff(&left, &right, &output_dir, &visual_options)
-                .with_context(|| "PDF visual diff failed")?;
-        if !cli.quiet {
-            let text = if cli.format == Format::Json {
-                serde_json::to_string_pretty(&report)?
-            } else {
-                report.summary_text()
-            };
-            emit(&text, &cli.output)?;
-        }
-        return Ok(if report.has_changes() { 1 } else { 0 });
-    }
-
     progress.finish();
     progress.reset();
     let mut report = if git_history {
@@ -1344,8 +1389,8 @@ fn run() -> Result<i32> {
             .warnings
             .push("content filter applied; summary reflects the full comparison".to_string());
     }
-    if cli.detail == DetailMode::Concise {
-        diff_core::concise::apply(&mut report);
+    if let DetailMode::Concise(limit) = cli.detail {
+        diff_core::concise::apply(&mut report, limit);
     }
 
     if cli.quiet {

@@ -1,6 +1,6 @@
 # DiffEverything
 
-**Current release: 1.1.1 (Toyger)**
+**Current version: 1.2.0 (Toyger)**
 
 A Rust CLI that compares heterogeneous files by normalizing them into one diff tree. It does not replace `diff`; it adds format-aware comparison and multiple report formats.
 
@@ -16,10 +16,10 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 | Serialized data | Parquet / Avro / ORC / CBOR / MessagePack / Protobuf | Parquet/Avro schema and row values; ORC metadata, stripe statistics and payload hashes; CBOR/MessagePack values; generic Protobuf wire fields; `--detail concise` caps changes, `full` shows every change |
 | Databases | SQLite 3 `.db` / `.sqlite` | Semantic diff of tables, columns, rows, indexes and triggers; equal databases with different page sizes or layouts compare equal |
 | Cross-format | JSON ↔ YAML ↔ TOML ↔ INI ↔ XML ↔ HTML ↔ Plist ↔ Pickle | Parse both sides into a common tree, e.g. `YAML+JSON`, `PLIST+JSON`, `PICKLE+JSON` |
-| Tables | CSV / TSV | Header, row and cell diff; align rows with `--key` |
-| Spreadsheets | XLSX / XLS / ODS | Worksheet and cell diff (calamine) |
-| Documents | PDF / OFD / DOCX / PPTX | PDF text layer, page count, page-level text blocks and rendered visual diff (HTML/PNG/PDF reports); OFD page text; DOCX body/headers/footers; PPTX slides/notes |
-| Open documents / mail | ODT / ODP / EPUB / RTF / EML | ODT/ODP text and metadata plus embedded entry hashes; EPUB metadata, spine and chapter text; RTF paragraphs and control words; EML headers, text/HTML bodies, attachments and hashes |
+| Tables | CSV / TSV | Header, row and cell diff; keyed or LCS-aligned rows, row moves, duplicate keys, encoding/BOM detection, ignored columns and numeric tolerance |
+| Spreadsheets | XLSX / XLS / ODS | Worksheet and cell diff; sheet add/remove/reorder/rename, hidden sheets/rows/columns, merged ranges, defined names, drawing/chart references, conditional-formatting rules, cached values plus optional formulas, and row insertion/deletion alignment |
+| Documents | PDF / OFD / DOCX / PPTX | PDF/OFD page-aligned text-block diff with positions, page sizes/metadata and page add/remove/move detection; DOCX paragraph/heading/list/table blocks with precise run/paragraph font metrics and media hashes; PPTX presentation-order slides with shape text/tables/media/notes, geometry, font metrics and hidden-slide state; PDF↔DOCX/ODT and DOCX↔ODT/PPTX↔ODP block mapping |
+| Open documents / mail | ODT / ODP / EPUB / RTF / EML | ODT/ODP block and table diff with metadata/media hashes; EPUB metadata, spine and chapter text; RTF paragraphs and control words; EML headers, text/HTML bodies, attachments and hashes |
 | Images / OCR | PNG / JPEG / GIF / WebP / BMP / TIFF / ICO / CUR | Pixel difference ratio, YIQ perceptual tolerance (`--image-threshold`), max channel delta, bounding box, changed regions, heatmap, side-by-side image, Tesseract OCR, scanned-PDF OCR |
 | Audio | MP3 / FLAC / OGG / M4A / WAV / AAC / OPUS / WMA | Duration, bitrate, sample rate, channels and tag metadata (lofty); RMS waveform windows in full mode, capped in concise mode |
 | Video / waveform | MP4 / M4V / MKV / WebM / MOV / AVI / WMV / FLV | Container tracks, codecs, dimensions, frame counts, packet counts/bytes and per-track packet hashes; audio-track RMS waveform; full mode shows more track/packet and waveform detail |
@@ -38,7 +38,7 @@ The design draws on diffoscope, Graphtage, difftastic, Open Diff, uni-diff, diff
 
 ## Quick Start
 
-Requires Rust 1.88+.
+Requires Rust 1.88+ (MSRV). The current release/CI toolchain is Rust 1.100.1.
 
 ```powershell
 cargo build --release -p diff-cli
@@ -63,8 +63,14 @@ Common examples:
 .\target\release\diff-everything.exe fixtures\structured\cross.yaml fixtures\structured\cross.json
 .\target\release\diff-everything.exe fixtures\plist\old.plist fixtures\plist\old-binary.plist
 
-# CSV row alignment
+# Structured documents, slides and spreadsheets
+.\target\release\diff-everything.exe fixtures\docs\old.docx fixtures\docs\new.docx
+.\target\release\diff-everything.exe fixtures\docs\old.pptx fixtures\docs\new.pptx
+.\target\release\diff-everything.exe fixtures\workbook\old.xlsx fixtures\workbook\new.xlsx --compare-formulas
+
+# CSV row alignment, ignored columns and numeric tolerance
 .\target\release\diff-everything.exe fixtures\table\old.csv fixtures\table\new.csv --key id
+.\target\release\diff-everything.exe old.csv new.csv --ignore-columns notes --numeric-tolerance 0.01
 
 # Syntax token / full syntax tree
 .\target\release\diff-everything.exe fixtures\code\old.rs fixtures\code\new.rs --mode token --ignore-comments
@@ -185,13 +191,25 @@ Common examples:
 `--version` prints the codename plus build metadata; `-V` prints only the first line:
 
 ```text
-diff-everything 1.1.1 (Toyger)
+diff-everything 1.2.0 (Toyger)
 Commit:     <git-commit>
 Build:      release / <target-triple>
 Rust:       <rustc-version>
 License:    MIT
 Repository: https://github.com/ChidcGithub/DiffEverything
 ```
+
+## Structured Documents, Slides and Spreadsheets
+
+- DOCX is compared by block, not as one flattened text blob: paragraphs, headings, lists, tables, headers/footers, footnotes/endnotes, comments and embedded media each have a stable path such as `body/p[12]` or `body/tbl[1]`. Exact text that moves is reported as `moved`; run formatting and precise paragraph metrics (font family, point size, bold/italic/underline, color, alignment, line spacing, indents) are compared at block level.
+- PPTX follows `ppt/presentation.xml` and its relationships, not `slideN.xml` file names. Slides added, removed, reordered or hidden are reported at slide level; text, tables, pictures, notes, shape geometry, layout references and run font metrics (point size, family, bold/italic/underline, color, baseline) are compared inside each slide.
+- ODT/ODP use the same block model: paragraphs, headings, tables and slide pages have stable `body/...` or `slide[n]/...` paths, with metadata and embedded media hashes.
+- PDF and OFD are page-aligned: `page[n]` blocks prevent an inserted page from making every later page look changed. PDF metadata, page sizes and positioned text blocks are reported. `--pdf-visual` now attaches its rendered-artifact summary to the same `DocumentDiff`/`DiffReport` (ANSI/JSON/HTML) while still writing HTML/PNG/PDF/`report.json` files.
+- XLSX/XLS/ODS compare sheet order, renames, hidden sheets/rows/columns, merged ranges, defined names, drawing/chart references, conditional-formatting rules and cached cell values. `--compare-formulas` adds formula text; row insertion/deletion is aligned so later rows do not become thousands of shifted cell changes.
+- CSV/TSV uses keyed alignment when `--key` is present and LCS row alignment otherwise. Duplicate keys are reported as `key#2` instead of being overwritten; encoding/BOM detection, `--ignore-columns` and `--numeric-tolerance` are supported.
+- HTML reports include side-by-side tables for changed document blocks, slide titles/notes and workbook cells, in addition to the compact change list.
+- Any parser failure falls back to the previous text or binary comparison and emits a warning. Document, slide, table and workbook limits propagate to `TRUNCATED` and exit code `3` when the comparison is equal but incomplete.
+- To keep the CLI small, document and slide item limits share the existing `--max-entries` / `--no-entry-limit` / `--no-limits` controls instead of adding separate flags.
 
 ## CLI Options
 
@@ -209,11 +227,14 @@ Repository: https://github.com/ChidcGithub/DiffEverything
 | `--ignore-comments` | Ignore comments; supported languages use token mode automatically |
 | `--ignore-whitespace` / `--ignore-case` | Ignore whitespace / case in text comparison |
 | `--key <COLUMN>` | CSV/TSV row alignment key |
+| `--ignore-columns <COLUMNS>` | Comma-separated CSV/TSV column names or spreadsheet column letters (for example `B,D`) excluded from comparison |
+| `--numeric-tolerance <N>` | Absolute tolerance when both table cells parse as numbers; default `0` (exact) |
+| `--compare-formulas` | Compare spreadsheet formula text in addition to cached values |
 | `--exclude <GLOB>` | Exclude paths in directory comparisons; repeatable |
 | `--image-threshold <0..1>` | YIQ perceptual tolerance for images; higher ignores subtle color changes, default 0 |
 | **Output and filtering** | |
 | `-o, --output <FILE>` | Write the report to a file |
-| `--detail <concise\|full>` | Concise removes equal context and limits detail; full keeps the complete report and enables decompilation; default `concise` |
+| `--detail <N\|concise\|full>` | Concise removes equal context and keeps at most N changed units (default 10); numeric values set a custom limit; full keeps the complete report and enables decompilation |
 | `--style <auto\|plain\|rich>` | ANSI/TUI layout; `auto` uses rich only on a terminal, `plain` keeps the compact piped layout, `rich` forces the decorated layout |
 | `--head <N>` / `--last <N>` | Keep only the first/last N detail units per file or entry |
 | `--filter <PATTERN>` | Match paths/labels or content; repeatable, glob supported; text keeps matching lines and `--context` context |
@@ -232,7 +253,7 @@ Repository: https://github.com/ChidcGithub/DiffEverything
 | **Resource and recursion limits** | |
 | `--max-rows <N>` / `--max-table-rows <N>` / `--max-workbook-cells <N>` | Detail rows, table rows and workbook cell limits |
 | `--max-file-bytes <BYTES>` / `--no-file-size-limit` | Override or remove the 64 MiB per-file detailed-diff limit; removing it may exhaust memory |
-| `--max-entries <N>` / `--no-entry-limit` | Directory/archive entry limit, or remove it entirely |
+| `--max-entries <N>` / `--no-entry-limit` | Directory/archive/document/slide entry limit, or remove it entirely |
 | `--max-expanded-bytes <BYTES>` | Total unpacked bytes (archive entries and decompressed streams, every nesting level, both sides) one comparison may materialize; default 1 GiB |
 | `--max-inflight-bytes <BYTES>` | Maximum bytes of file contents held in flight at the same time by the parallel workers; default 256 MiB, `0` disables |
 | `--no-limits` | Remove all analysis limits: file size, expanded bytes, in-flight bytes, entries, rows, cells, depth and PDF pages |
@@ -253,7 +274,7 @@ Repository: https://github.com/ChidcGithub/DiffEverything
 | `--sftp-known-hosts <FILE>` | Verify SFTP host keys against OpenSSH known_hosts |
 | **Documents, images and OCR** | |
 | `--image-heatmap <FILE>` / `--image-side-by-side <FILE>` | Image heatmap / side-by-side image |
-| `--pdf-visual` / `--pdftoppm <FILE>` / `--pdf-dpi <N>` / `--pdf-max-pages <N>` / `--pdf-output-dir <DIR>` | Rendered PDF visual diff |
+| `--pdf-visual` / `--pdftoppm <FILE>` / `--pdf-dpi <N>` / `--pdf-max-pages <N>` / `--pdf-output-dir <DIR>` | Rendered PDF visual diff attached to the document report/JSON, with HTML/PNG/PDF artifacts |
 | `--ocr` / `--tesseract <FILE>` / `--tessdata <DIR>` / `--ocr-language <LANG>` | Image/PDF OCR and tool configuration |
 | **Decompilation and external tools** | |
 | `-y, --yes` | Accept decompilation, large-download (>100 MiB) and packed-application prompts |
@@ -301,7 +322,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 356 Rust tests (unit + integration + CLI)
+# 382 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -326,7 +347,7 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 - Example terminal layout (colors omitted):
 
 ```text
-DiffEverything 1.1.1 (Toyger)
+DiffEverything 1.2.0 (Toyger)
 ========================================================================
 left     fixtures\text\old.txt  [text | 105 B]
 right    fixtures\text\new.txt  [text | 160 B]
@@ -358,6 +379,7 @@ elapsed  7 ms
 
 ## Performance, Size and Hardening
 
+- `--detail concise` is enforced while comparing, not only after the full report is built: text hunks, table rows, workbook cells, document blocks and slides stop at the display cap (default 10, configurable with `--detail <N>`). The cap is display-only; it does not change `completeness` or turn an equal comparison into exit code `3`.
 - `cargo build --release` is the only optimized profile: `opt-level = 3`, thin LTO, four codegen units and symbol stripping. Thin LTO keeps the binary close to a fat-LTO build while building roughly three times faster, and `cargo test --release` shares the same dependency artifacts, so the tested and the shipped binary come from one profile.
 - `crates/diff-core/tests/integration.rs` is the single integration-test target; the six case modules are included from `tests/cases/` and no longer produce six separate link steps.
 - Unit tests live outside `src/` in `tests/unit/<source path>.rs`; each source file mounts them with `#[cfg(test)] #[path]`, keeping private access without test code in the source files.
@@ -375,7 +397,7 @@ elapsed  7 ms
 ## Limitations
 
 - PDF uses the text layer by default; `--pdf-visual` requires poppler `pdftoppm`, and `--ocr` requires Tesseract. Portable builds can be installed separately.
-- PDF visual output includes `report.pdf` (side-by-side + heatmap), `report-overlay.pdf` (raster red overlay), `report-vector.pdf` (vector rectangles appended to page content), plus HTML/PNG; `report.html` embeds base64 PNGs and is self-contained.
+- PDF visual output includes `report.pdf` (side-by-side + heatmap), `report-overlay.pdf` (raster red overlay), `report-vector.pdf` (vector rectangles appended to page content), `report.json` (machine-readable page summary), plus HTML/PNG; `report.html` embeds base64 PNGs and is self-contained.
 - WebDAV / HTTP(S) / SFTP / SMB support file input; WebDAV / SFTP / SMB support recursive directories.
 - aria2 is embedded only in Windows builds. The executable is stored zstd-compressed in the binary and extracted to the temporary directory on first use; Linux and macOS use `aria2c` from PATH when present and otherwise fall back to the built-in HTTP downloader.
 - Git history requires `git` on PATH. Remote histories are capped at 2,000 commits per side, and refs/commit metadata are compared rather than every commit patch.
@@ -384,6 +406,10 @@ elapsed  7 ms
 - `--external-tool` receives resolved local paths; remote inputs are downloaded to a temporary directory first.
 - SFTP does not verify host fingerprints by default. Use `--sftp-known-hosts <FILE>` in production; missing or mismatched keys are rejected.
 - Legacy `.doc` / `.ppt` fall back to binary; `.xls` / `.ods` are supported by calamine.
+- DOCX/PPTX comparison covers text, paragraph/table structure, media hashes, run formatting and precise font/paragraph metrics (family, point size, bold/italic/underline, color, baseline, line spacing, indents), shape geometry, layout relationships and hidden-slide state. Pixel-accurate rendered layout is not compared.
+- XLSX/ODS comparison covers sheet order, visibility, values, formulas, row alignment, merged ranges, defined names, hidden dimensions, drawing references, chart XML hashes and conditional-formatting rule attributes/formulas. Differential-style (`dxf`) font/fill/border attributes are expanded into the rule details.
+- PDF/OFD comparison is page- and text-block-aligned and includes PDF metadata, page sizes and positioned text blocks; embedded PDF font metrics/rendered layout are not compared. `--pdf-visual` artifacts are summarized inside the document report and JSON, and remain available as separate HTML/PNG/PDF/`report.json` files.
+- Cross-format PDF↔DOCX/ODT/PPTX/ODP and DOCX↔ODT/PPTX↔ODP comparisons use normalized block paths where both sides expose them; remaining mixed document pairs (for example PDF vs EPUB) still use extracted text with a type-mismatch warning.
 - Default limits are 64 MiB per file, 10,000 directory entries and 2,000 archive entries; all are configurable. `--no-file-size-limit` removes the per-file limit, `--no-entry-limit` removes directory/archive entry caps, and `--no-limits` removes all analysis limits. These flags can consume a lot of memory or time on huge inputs.
 - Unpacked data is additionally bounded by a shared expanded-bytes budget (default 1 GiB): every archive reader and decompressor charges the bytes it materializes across both sides and all nesting levels, and once the budget is spent the remaining entries are skipped and the report is marked truncated. Directory scans also stop at the entry limit instead of enumerating trees that cannot be compared anyway.
 - Encrypted ZIPs and archives with unsupported compression fall back to binary with a warning.

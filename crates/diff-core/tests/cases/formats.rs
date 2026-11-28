@@ -1063,9 +1063,68 @@ fn compares_docx_and_pptx_text() {
         let report = engine().compare(&fixture(left), &fixture(right)).unwrap();
         assert_eq!(report.status, DiffStatus::Different);
         match &report.root.body {
+            DiffBody::Document(diff) => assert_eq!(diff.format, format),
+            DiffBody::Presentation(diff) => assert_eq!(diff.format, format),
             DiffBody::Text(diff) => assert_eq!(diff.format, format),
-            other => panic!("expected {format} text diff, got {other:?}"),
+            other => panic!("expected {format} structured diff, got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn cross_format_docx_and_odt_use_block_mapping() {
+    let report = engine()
+        .compare(&fixture("docs/old.docx"), &fixture("documents/old.odt"))
+        .unwrap();
+    assert_eq!(report.status, DiffStatus::Different);
+    match &report.root.body {
+        DiffBody::Document(diff) => {
+            assert_eq!(diff.format, "docx-to-odt");
+            assert!(
+                diff.blocks
+                    .iter()
+                    .any(|block| block.path.starts_with("body/p["))
+            );
+        }
+        other => panic!("expected cross-format document diff, got {other:?}"),
+    }
+}
+
+#[test]
+fn cross_format_pdf_and_docx_use_block_mapping() {
+    let report = engine()
+        .compare(&fixture("pdf/old.pdf"), &fixture("docs/old.docx"))
+        .unwrap();
+    assert_eq!(report.status, DiffStatus::Different);
+    match &report.root.body {
+        DiffBody::Document(diff) => {
+            assert_eq!(diff.format, "pdf-to-docx");
+            assert!(
+                diff.blocks
+                    .iter()
+                    .any(|block| block.path.starts_with("page[") || block.path.starts_with("body/"))
+            );
+        }
+        other => panic!("expected cross-format document diff, got {other:?}"),
+    }
+}
+
+#[test]
+fn cross_format_pptx_and_odp_use_block_mapping() {
+    let report = engine()
+        .compare(&fixture("docs/old.pptx"), &fixture("documents/old.odp"))
+        .unwrap();
+    assert_eq!(report.status, DiffStatus::Different);
+    match &report.root.body {
+        DiffBody::Document(diff) => {
+            assert_eq!(diff.format, "pptx-to-odp");
+            assert!(
+                diff.blocks
+                    .iter()
+                    .any(|block| block.path.starts_with("slide["))
+            );
+        }
+        other => panic!("expected cross-format presentation diff, got {other:?}"),
     }
 }
 
@@ -1076,11 +1135,12 @@ fn compares_ofd_text() {
         .unwrap();
     assert_eq!(report.status, DiffStatus::Different);
     match &report.root.body {
-        DiffBody::Text(diff) => {
+        DiffBody::Document(diff) => {
             assert_eq!(diff.format, "ofd");
-            assert!(diff.added_lines > 0);
+            assert!(diff.left_pages.unwrap_or(0) > 0);
+            assert!(!diff.blocks.is_empty());
         }
-        other => panic!("expected OFD text diff, got {other:?}"),
+        other => panic!("expected OFD document diff, got {other:?}"),
     }
 }
 
@@ -1091,23 +1151,35 @@ fn compares_pdf_text() {
         .unwrap();
     assert_eq!(report.status, DiffStatus::Different);
     match &report.root.body {
-        DiffBody::Text(diff) => {
+        DiffBody::Document(diff) => {
             assert_eq!(diff.format, "pdf");
-            assert!(diff.added_lines > 0);
+            assert_eq!(diff.right_pages, Some(14));
+            assert!(diff.left_pages.unwrap_or(0) > 0);
+            assert!(!diff.blocks.is_empty());
             assert!(
-                diff.hunks
+                diff.blocks
                     .iter()
-                    .flat_map(|hunk| &hunk.lines)
-                    .any(|line| { line.text.starts_with("# PDF pages:") })
+                    .any(|block| block.path.starts_with("page["))
             );
             assert!(
-                diff.hunks
+                diff.blocks
                     .iter()
-                    .flat_map(|hunk| &hunk.lines)
-                    .any(|line| { line.text.starts_with("# Page 2") })
+                    .any(|block| block.path.contains("/block["))
+            );
+            assert!(
+                diff.blocks.iter().any(|block| block.position.is_some()),
+                "{:?}",
+                diff.blocks
+            );
+            assert!(
+                diff.metadata
+                    .iter()
+                    .any(|field| field.path.starts_with("metadata/page[1]/size")),
+                "{:?}",
+                diff.metadata
             );
         }
-        other => panic!("expected PDF text diff, got {other:?}"),
+        other => panic!("expected PDF document diff, got {other:?}"),
     }
 }
 

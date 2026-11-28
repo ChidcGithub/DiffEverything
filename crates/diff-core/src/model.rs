@@ -58,6 +58,8 @@ pub enum FileKind {
     Docx,
     Xlsx,
     Pptx,
+    /// Cross-format document comparison (for example DOCX vs ODT).
+    DocumentCross,
     Office,
     Squashfs,
     Snap,
@@ -133,6 +135,7 @@ impl FileKind {
             Self::Docx => "docx",
             Self::Xlsx => "xlsx",
             Self::Pptx => "pptx",
+            Self::DocumentCross => "document-cross",
             Self::Office => "office",
             Self::Squashfs => "squashfs",
             Self::Snap => "snap",
@@ -197,6 +200,13 @@ impl FileKind {
                 | Self::Rtf
                 | Self::Eml
                 | Self::GitHistory
+        )
+    }
+
+    pub fn is_document(self) -> bool {
+        matches!(
+            self,
+            Self::Pdf | Self::Ofd | Self::Docx | Self::Pptx | Self::Odt | Self::Odp
         )
     }
 }
@@ -452,6 +462,8 @@ pub enum DiffBody {
     Tree(TreeDiff),
     Notebook(NotebookDiff),
     Structured(StructuredDiff),
+    Document(DocumentDiff),
+    Presentation(PresentationDiff),
     Table(TableDiff),
     Workbook(WorkbookDiff),
     Image(ImageDiff),
@@ -604,6 +616,166 @@ pub enum StructuredChangeKind {
     Changed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    Added,
+    Removed,
+    Changed,
+    Moved,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldChange {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentDiff {
+    pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_pages: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_pages: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub metadata: Vec<FieldChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<BlockChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<DocumentTableDiff>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<MediaChange>,
+    /// Rendered/visual artifacts produced for this document, when enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visual: Option<DocumentVisual>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentVisual {
+    pub kind: String,
+    pub output_dir: String,
+    pub report_html: String,
+    pub report_pdf: String,
+    pub report_json: String,
+    pub pages_compared: usize,
+    pub pages_added: usize,
+    pub pages_removed: usize,
+    pub changed_pages: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<VisualPage>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VisualPage {
+    pub page: usize,
+    pub differing_pixels: u64,
+    pub total_pixels: u64,
+    pub diff_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockChange {
+    /// Stable locator such as `body/p[12]` or `header[1]/p[2]`.
+    pub path: String,
+    /// `paragraph`, `heading`, `list-item`, `table`, `image`, ...
+    pub kind: String,
+    pub change: ChangeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right: Option<String>,
+    /// Line/word diff for a changed block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline: Option<TextDiff>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<String>,
+    /// Paragraph/run formatting or style identifier when it changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<FieldChange>,
+    /// Text position for positioned PDF blocks when it changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<FieldChange>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentTableDiff {
+    pub path: String,
+    pub table: TableDiff,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MediaChange {
+    pub path: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PresentationDiff {
+    pub format: String,
+    pub left_slides: usize,
+    pub right_slides: usize,
+    pub slides_added: usize,
+    pub slides_removed: usize,
+    pub slides_moved: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slides: Vec<SlideChange>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SlideChange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub change: ChangeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<FieldChange>,
+    /// Slide hidden/shown state when it changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<FieldChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shapes: Vec<ShapeChange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<TextDiff>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ShapeChange {
+    pub path: String,
+    pub name: String,
+    pub kind: String,
+    pub change: ChangeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<FieldChange>,
+    /// Exact run/text-body font metrics (size, family, style, spacing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<FieldChange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextDiff>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<TableDiff>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaChange>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TableDiff {
     pub format: String,
@@ -612,8 +784,23 @@ pub struct TableDiff {
     pub right_rows: usize,
     pub columns_added: Vec<String>,
     pub columns_removed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns_moved: Vec<ColumnMove>,
     pub rows: Vec<TableRowChange>,
+    /// Keys that occur more than once on at least one side. The occurrences
+    /// are compared independently instead of overwriting each other.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub duplicate_keys: Vec<String>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ColumnMove {
+    pub name: String,
+    /// 1-based position on the left side.
+    pub left_index: usize,
+    /// 1-based position on the right side.
+    pub right_index: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -629,6 +816,7 @@ pub enum RowChangeKind {
     Added,
     Removed,
     Changed,
+    Moved,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -636,6 +824,10 @@ pub struct CellChange {
     pub column: String,
     pub left: Option<String>,
     pub right: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_formula: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_formula: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -643,8 +835,32 @@ pub struct WorkbookDiff {
     pub format: String,
     pub sheets_added: Vec<String>,
     pub sheets_removed: Vec<String>,
+    /// Common sheets whose relative order changed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sheets_moved: Vec<SheetMove>,
+    /// Sheets that kept their content but changed name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sheets_renamed: Vec<SheetRename>,
+    /// Workbook-level defined names that changed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub defined_names: Vec<FieldChange>,
     pub sheets: Vec<SheetDiff>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetRename {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SheetMove {
+    pub name: String,
+    /// 1-based position on the left side.
+    pub left_index: usize,
+    /// 1-based position on the right side.
+    pub right_index: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -654,6 +870,26 @@ pub struct SheetDiff {
     pub left_columns: u32,
     pub right_rows: u32,
     pub right_columns: u32,
+    #[serde(default)]
+    pub left_hidden: bool,
+    #[serde(default)]
+    pub right_hidden: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merges_added: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merges_removed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_dimensions: Vec<FieldChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drawings_added: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drawings_removed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chart_changes: Vec<FieldChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditional_formats_added: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditional_formats_removed: Vec<String>,
     pub cells: Vec<CellChange>,
     pub truncated: bool,
 }
