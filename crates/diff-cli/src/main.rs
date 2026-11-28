@@ -15,6 +15,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod error_report;
 mod link;
 mod remote;
 mod support;
@@ -570,7 +571,7 @@ fn main() {
     let code = match run() {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("error: {error:#}");
+            error_report::print(&error);
             2
         }
     };
@@ -579,6 +580,7 @@ fn main() {
 
 fn run() -> Result<i32> {
     let cli = Cli::parse();
+    error_report::set_no_color(cli.no_color);
     if let Some(format) = &cli.support {
         if cli.left.is_some() || cli.right.is_some() {
             anyhow::bail!("do not pass LEFT/RIGHT together with --support");
@@ -770,6 +772,7 @@ fn run() -> Result<i32> {
         git_history,
         download,
     )?;
+    error_report::ensure_exists("left", &left)?;
 
     if let Some(patch_path) = &cli.apply_patch {
         if cli.patch_output.is_some() || cli.sync.is_some() || cli.base.is_some() {
@@ -870,6 +873,7 @@ fn run() -> Result<i32> {
         git_history,
         download,
     )?;
+    error_report::ensure_exists("right", &right)?;
     let _remote_temp = remote_temp;
 
     let mut packed_warnings = Vec::new();

@@ -319,6 +319,7 @@ Coverage includes every leaf format and key path/cell/line assertions, invalid-i
 
 - ANSI reports use a decorated layout automatically when stdout is a terminal: a labeled banner, aligned inputs, a colored status badge, summary/elapsed fields, section rules, styled markers and line-number gutters. `--style rich` forces it for redirected output; `--style plain` keeps the compact layout for scripts and logs. `--no-color` removes colors but keeps the rich layout.
 - CLI help is grouped by task (`Comparison`, `Output & display`, `Progress`, `Limits`, `Images`, `PDF & OCR`, `Merge & sync`, `Patches`, `Sessions & remote`, `Performance`, `Security`, `Approvals & decompilation`, `External tools`), wraps to the terminal width, and ends with common examples and exit codes.
+- Runtime errors use a structured layout: missing inputs show the left/right path and a spelling hint; other failures list a concise cause chain with targeted hints. Colors follow `--no-color` and `NO_COLOR`.
 - Directory and archive entries are compared in parallel with rayon. `--jobs` defaults to `4`, `--jobs 0` uses all cores, `--jobs 1` is sequential, and larger values cap workers. Results are collected in path order, so reports remain deterministic.
 - Progress is written to stderr, never to the report. It uses a spinner plus a `[####----]` bar, item counts and percentage. It is enabled automatically when stderr is a terminal; `--progress` forces it and `--no-progress` (or `--quiet`) disables it.
 - Example terminal layout (colors omitted):

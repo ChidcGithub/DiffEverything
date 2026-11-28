@@ -324,7 +324,16 @@ fn exit_codes_match_diff_convention() {
 
     let missing = run(&[Path::new("does-not-exist"), &fixture("text/new.txt")]);
     assert_eq!(missing.status.code(), Some(2));
-    assert!(stderr(&missing).contains("I/O error"));
+    let error = stderr(&missing);
+    assert!(error.contains("input not found"), "{error}");
+    assert!(error.contains("does-not-exist"), "{error}");
+    assert!(error.contains("hint:"), "{error}");
+    assert!(!error.contains("I/O error"), "{error}");
+
+    let missing_right = run(&[&fixture("text/old.txt"), Path::new("does-not-exist")]);
+    assert_eq!(missing_right.status.code(), Some(2));
+    let error = stderr(&missing_right);
+    assert!(error.contains("right: does-not-exist"), "{error}");
 }
 
 #[test]

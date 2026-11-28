@@ -43,6 +43,7 @@ crates/
 │  └─ tests/                 engine / formats / robustness
 └─ diff-cli/
    ├─ src/main.rs            argument parsing, exit codes, merge/patch/image branches
+   ├─ src/error_report.rs    structured runtime errors, IO translation and hints
    ├─ src/link.rs            aria2/built-in HTTP downloads, 100 MiB guard, Git history
    ├─ src/remote.rs          WebDAV / SFTP / SMB remote inputs
    ├─ src/support.rs         supported-format and per-format capability catalog
@@ -231,6 +232,13 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - Images, tables, workbooks, notebooks, audio and directories/archives use semantic ratios: pixel ratio, changed rows / max rows, changed cells / max cells, changed waveform windows / total windows, and changed entries / total entries.
 - Top-level containers use their entry ratio rather than the maximum child ratio, so one heavily changed file in a large directory does not mislabel the whole comparison.
 - ANSI, Markdown, HTML and JSON expose the verdict; the normal `DIFFERENT` status and exit code are unchanged.
+
+## Runtime Errors
+
+- Input paths are checked after remote/link resolution. A missing input produces `error: input not found`, a `left:`/`right:` path line and a spelling hint instead of a raw localized OS error.
+- Other failures are rendered as a concise cause chain. `std::io::ErrorKind` is translated to English descriptions (`file or directory not found`, `permission denied`, `invalid or malformed data`, `operation timed out`, and so on) with the OS error code retained.
+- Hints cover missing paths, permissions, truncated data, timeouts and other common cases.
+- ANSI styling is used only when stderr is a terminal and neither `--no-color` nor `NO_COLOR` is set.
 
 ## Supported Format Catalog
 
