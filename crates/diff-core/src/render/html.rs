@@ -120,6 +120,12 @@ footer { margin-top: 34px; color: var(--muted); font-size: 12px; }
             r#"<div class="verdict">COMPLETELY DIFFERENT (&gt;99% changed)</div>"#
         );
     }
+    if !report.is_complete() {
+        let _ = writeln!(
+            out,
+            r#"<div class="verdict">TRUNCATED (part of the input was skipped by limits)</div>"#
+        );
+    }
 
     let _ = writeln!(
         out,

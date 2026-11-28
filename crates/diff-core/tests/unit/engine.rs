@@ -137,3 +137,49 @@ fn raw_zip(
     bytes.extend_from_slice(&0u16.to_le_bytes()); // comment length
     bytes
 }
+
+#[test]
+fn resource_budget_charges_atomically_and_latches() {
+    let budget = ResourceBudget::new(100);
+    assert!(budget.charge(60));
+    assert_eq!(budget.expanded_bytes(), 60);
+    assert!(!budget.is_exhausted());
+
+    // 60 + 50 exceeds the cap: the charge is rejected and nothing is counted.
+    assert!(!budget.charge(50));
+    assert_eq!(budget.expanded_bytes(), 60);
+
+    // Charging exactly to the cap is allowed; exhaustion is announced once and
+    // then blocks every further charge.
+    assert!(budget.charge(40));
+    assert_eq!(budget.expanded_bytes(), 100);
+    assert!(!budget.is_exhausted());
+    assert!(budget.announce_exhaustion());
+    assert!(budget.is_exhausted());
+    assert!(!budget.announce_exhaustion());
+    assert!(!budget.charge(1));
+    assert_eq!(budget.expanded_bytes(), 100);
+}
+
+#[test]
+fn cab_reader_stops_when_the_expanded_budget_is_spent() {
+    let bytes = fs::read(fixture("cab/old.cab")).unwrap();
+    let mut ctx = Ctx {
+        budget: Arc::new(ResourceBudget::new(1)),
+        ..Ctx::default()
+    };
+
+    let entries = DiffEngine::new(DiffOptions::default())
+        .read_cab_entries(&bytes, "old.cab", &mut ctx)
+        .unwrap();
+    assert!(entries.is_empty(), "{:?}", entries.keys());
+    assert!(ctx.omitted > 0);
+    assert!(ctx.budget.is_exhausted());
+    assert!(
+        ctx.warnings
+            .iter()
+            .any(|warning| warning.contains("expanded-bytes budget exhausted")),
+        "{:?}",
+        ctx.warnings
+    );
+}

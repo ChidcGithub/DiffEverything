@@ -108,6 +108,13 @@ fn render_plain_header(report: &DiffReport, options: &RenderOptions, out: &mut S
         "status : {}",
         paint_status(report.status, options.color)
     );
+    if !report.is_complete() {
+        let _ = writeln!(
+            out,
+            "completeness: {} (part of the input was skipped by limits; see warnings)",
+            paint("TRUNCATED", BOLD_YELLOW, options.color)
+        );
+    }
     if report.completely_different {
         let _ = writeln!(
             out,
@@ -153,6 +160,18 @@ fn render_rich_header(report: &DiffReport, options: &RenderOptions, out: &mut St
         field_label("status", options),
         status_badge(report.status, options)
     );
+    if !report.is_complete() {
+        let _ = writeln!(
+            out,
+            "{} {}",
+            field_label("completeness", options),
+            paint(
+                "TRUNCATED (part of the input was skipped by limits)",
+                BOLD_YELLOW,
+                options.color
+            )
+        );
+    }
     if report.completely_different {
         let _ = writeln!(
             out,

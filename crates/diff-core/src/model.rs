@@ -225,6 +225,43 @@ impl DiffStatus {
     }
 }
 
+/// Whether a comparison examined everything it was asked to compare.
+///
+/// `status` says what was found; `completeness` says how much of the input
+/// that verdict covers. An `Equal` node with `Truncated` completeness only
+/// means that nothing differed among the entries, bytes or levels that were
+/// actually compared, because a limit (entry cap, depth, directory scan or
+/// resource budget) omitted the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComparisonCompleteness {
+    #[default]
+    Complete,
+    Truncated,
+}
+
+impl ComparisonCompleteness {
+    pub fn is_complete(self) -> bool {
+        matches!(self, Self::Complete)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Complete => "COMPLETE",
+            Self::Truncated => "TRUNCATED",
+        }
+    }
+
+    /// Collapses a parent's completeness from its own and a child's value.
+    pub fn merge(self, other: Self) -> Self {
+        if self.is_complete() && other.is_complete() {
+            Self::Complete
+        } else {
+            Self::Truncated
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ArtifactInfo {
     pub path: String,
@@ -315,9 +352,17 @@ pub struct DiffReport {
     pub root: DiffNode,
     pub warnings: Vec<String>,
     pub elapsed_ms: u128,
-    /// True when more than 90% of the compared content changed.
+    /// True when more than 99% of the compared content changed.
     #[serde(default)]
     pub completely_different: bool,
+    /// `Truncated` when any limit omitted part of the input; an `Equal` status
+    /// then only covers what was compared.
+    #[serde(default)]
+    pub completeness: ComparisonCompleteness,
+    /// Total bytes of unpacked data (archive entries, decompressed streams)
+    /// charged against the expanded-bytes budget during this comparison.
+    #[serde(default)]
+    pub expanded_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decompiled: Option<DecompilationDiff>,
 }
@@ -335,6 +380,10 @@ impl DiffReport {
     pub fn has_differences(&self) -> bool {
         self.status.is_different()
     }
+
+    pub fn is_complete(&self) -> bool {
+        self.completeness.is_complete()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -342,6 +391,10 @@ pub struct DiffNode {
     pub label: String,
     pub status: DiffStatus,
     pub body: DiffBody,
+    /// `Truncated` when a limit omitted part of this node's input (entries
+    /// skipped, depth reached, directory not scanned, budget exhausted).
+    #[serde(default)]
+    pub completeness: ComparisonCompleteness,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decompiled: Option<DecompilationDiff>,
 }
@@ -352,6 +405,7 @@ impl DiffNode {
             label: label.into(),
             status,
             body,
+            completeness: ComparisonCompleteness::Complete,
             decompiled: None,
         }
     }
@@ -359,6 +413,32 @@ impl DiffNode {
     pub fn with_decompiled(mut self, decompiled: DecompilationDiff) -> Self {
         self.decompiled = Some(decompiled);
         self
+    }
+
+    /// Marks this node as incompletely compared. Container nodes propagate the
+    /// flag from their children through `completeness_of`.
+    pub fn with_completeness(mut self, completeness: ComparisonCompleteness) -> Self {
+        self.completeness = completeness;
+        self
+    }
+
+    /// Folds completeness over this node and everything below it.
+    pub fn completeness_of(&self) -> ComparisonCompleteness {
+        let mut completeness = self.completeness;
+        match &self.body {
+            DiffBody::Directory(diff) => {
+                for entry in &diff.entries {
+                    completeness = completeness.merge(entry.completeness_of());
+                }
+            }
+            DiffBody::Archive(diff) => {
+                for entry in &diff.entries {
+                    completeness = completeness.merge(entry.completeness_of());
+                }
+            }
+            _ => {}
+        }
+        completeness
     }
 }
 

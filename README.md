@@ -233,7 +233,8 @@ Repository: https://github.com/ChidcGithub/DiffEverything
 | `--max-rows <N>` / `--max-table-rows <N>` / `--max-workbook-cells <N>` | Detail rows, table rows and workbook cell limits |
 | `--max-file-bytes <BYTES>` / `--no-file-size-limit` | Override or remove the 64 MiB per-file detailed-diff limit; removing it may exhaust memory |
 | `--max-entries <N>` / `--no-entry-limit` | Directory/archive entry limit, or remove it entirely |
-| `--no-limits` | Remove all analysis limits: file size, entries, rows, cells, depth and PDF pages |
+| `--max-expanded-bytes <BYTES>` | Total unpacked bytes (archive entries and decompressed streams, every nesting level, both sides) one comparison may materialize; default 1 GiB |
+| `--no-limits` | Remove all analysis limits: file size, expanded bytes, entries, rows, cells, depth and PDF pages |
 | `--max-depth <N>` | Container nesting limit counted from the input root, for directories, archives and compressed streams; default 32 (1..1024) |
 | **Merge and sync** | |
 | `--base <FILE\|DIR>` | Three-way merge base (a directory base enables directory merge) |
@@ -260,7 +261,7 @@ Repository: https://github.com/ChidcGithub/DiffEverything
 
 Filtering affects display only; it does not change comparison status, exit codes or summary counts. `--head` / `--last` mark truncated output with `(truncated)`.
 
-Exit codes: `0` same, `1` differences or merge conflicts, `2` runtime error.
+Exit codes: `0` same, `1` differences or merge conflicts, `2` runtime error, `3` indeterminate (nothing differed among the compared part, but a limit omitted part of the input, so equality is not proven).
 
 ## Architecture
 
@@ -299,7 +300,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 346 Rust tests (unit + integration + CLI)
+# 351 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -360,6 +361,7 @@ elapsed  7 ms
 - `cargo build --release` is the fast iteration profile: `opt-level = 3`, no LTO, 16 codegen units and symbol stripping. The shipping `dist` profile (`cargo build --profile dist -p diff-cli`) uses fat LTO and one codegen unit for the smallest/fastest binary. This keeps normal release builds and release tests practical while preserving an optimized artifact for publication.
 - `crates/diff-core/tests/integration.rs` is the single integration-test target; the six case modules are included from `tests/cases/` and no longer produce six separate link steps.
 - Unit tests live outside `src/` in `tests/unit/<source path>.rs`; each source file mounts them with `#[cfg(test)] #[path]`, keeping private access without test code in the source files.
+- Every comparison carries a shared `ResourceBudget`: archive readers and decompressors charge the bytes they unpack atomically, so rayon workers cannot race past the cap, and the budget latches when spent. Containers that omitted entries (archive entry caps, directory scan stop, depth limit, budget exhaustion) propagate a `ComparisonCompleteness` of `Truncated` up the `DiffNode` tree into `DiffReport.completeness`; the CLI then exits `3` instead of `0` when nothing differed but the input was not fully compared.
 - The embedded Windows aria2 executable is stored zstd-compressed in the binary (2.07 MiB instead of 5.65 MiB) and decompressed to the temporary directory on first use. Raw binary SHA-256 is recorded in `THIRD_PARTY_LICENSES.md`.
 - Directory and archive entry comparison shares one `Arc<GlobSet>` instead of cloning the matcher per entry, merges sorted key sets linearly, avoids a per-entry result-key clone, and skips progress-message formatting when progress is disabled.
 - Every archive reader reads entries through one shared bounded read (`limit + 1` bytes), including CAB; XAR validates its declared table-of-contents size before allocating and bounds TOC and payload decoding; ZIP LZMA bounds the compressed stream as well as its output. `--max-depth` counts container levels from the input root: leaves compare at `depth <= max_depth`, containers expand only below it, and a directory at the limit is reported as one `directory depth limit reached` node instead of being scanned.
@@ -381,6 +383,7 @@ elapsed  7 ms
 - SFTP does not verify host fingerprints by default. Use `--sftp-known-hosts <FILE>` in production; missing or mismatched keys are rejected.
 - Legacy `.doc` / `.ppt` fall back to binary; `.xls` / `.ods` are supported by calamine.
 - Default limits are 64 MiB per file, 10,000 directory entries and 2,000 archive entries; all are configurable. `--no-file-size-limit` removes the per-file limit, `--no-entry-limit` removes directory/archive entry caps, and `--no-limits` removes all analysis limits. These flags can consume a lot of memory or time on huge inputs.
+- Unpacked data is additionally bounded by a shared expanded-bytes budget (default 1 GiB): every archive reader and decompressor charges the bytes it materializes across both sides and all nesting levels, and once the budget is spent the remaining entries are skipped and the report is marked truncated. Directory scans also stop at the entry limit instead of enumerating trees that cannot be compared anyway.
 - Encrypted ZIPs and archives with unsupported compression fall back to binary with a warning.
 
 ## License

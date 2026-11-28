@@ -32,6 +32,8 @@ fn report(node: DiffNode) -> DiffReport {
         warnings: Vec::new(),
         elapsed_ms: 0,
         completely_different: false,
+        completeness: crate::model::ComparisonCompleteness::Complete,
+        expanded_bytes: 0,
         decompiled: None,
     }
 }

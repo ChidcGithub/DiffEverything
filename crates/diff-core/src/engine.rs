@@ -16,6 +16,7 @@ use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use zip::ZipArchive;
 
@@ -54,6 +55,73 @@ impl Default for DecompileOptions {
 /// It stays well below `u64::MAX` so internal `limit + 1` reads cannot overflow.
 pub const UNLIMITED_FILE_BYTES: u64 = u64::MAX / 2;
 
+/// Default budget for the total amount of unpacked data (archive entries and
+/// decompressed streams, both sides, every nesting level) one comparison may
+/// produce. Per-entry limits bound one payload; this bounds their sum.
+pub const DEFAULT_MAX_EXPANDED_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Shared budget for the total unpacked bytes a comparison may produce.
+///
+/// Every archive reader and decompressor charges the bytes it materializes.
+/// Charging is atomic so rayon workers cannot race past the cap; a worker may
+/// overshoot by at most one entry (it charges after reading), which the
+/// per-entry limit already bounds. Once the budget is spent it stays spent.
+#[derive(Debug)]
+pub struct ResourceBudget {
+    max_expanded_bytes: u64,
+    expanded_bytes: AtomicU64,
+    exhausted: AtomicBool,
+}
+
+impl Default for ResourceBudget {
+    fn default() -> Self {
+        Self::new(UNLIMITED_FILE_BYTES)
+    }
+}
+
+impl ResourceBudget {
+    pub fn new(max_expanded_bytes: u64) -> Self {
+        Self {
+            max_expanded_bytes,
+            expanded_bytes: AtomicU64::new(0),
+            exhausted: AtomicBool::new(false),
+        }
+    }
+
+    pub fn max_expanded_bytes(&self) -> u64 {
+        self.max_expanded_bytes
+    }
+
+    pub fn expanded_bytes(&self) -> u64 {
+        self.expanded_bytes.load(Ordering::Relaxed)
+    }
+
+    pub fn is_exhausted(&self) -> bool {
+        self.exhausted.load(Ordering::Relaxed)
+    }
+
+    /// Charges `bytes` of unpacked data; `false` means the budget is spent and
+    /// the caller must stop materializing more data.
+    pub fn charge(&self, bytes: u64) -> bool {
+        if self.is_exhausted() {
+            return false;
+        }
+        self.expanded_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current
+                    .checked_add(bytes)
+                    .filter(|total| *total <= self.max_expanded_bytes)
+            })
+            .is_ok()
+    }
+
+    /// Latches exhaustion and returns `true` only for the caller that first
+    /// observed it, so the warning is emitted once across all workers.
+    pub fn announce_exhaustion(&self) -> bool {
+        !self.exhausted.swap(true, Ordering::Relaxed)
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DiffOptions {
     pub context: usize,
@@ -81,10 +149,18 @@ pub struct DiffOptions {
     /// rayon global pool; 1 disables parallelism; default 4.
     #[serde(default = "default_jobs")]
     pub jobs: usize,
+    /// Total unpacked bytes (archive entries, decompressed streams, every
+    /// nesting level, both sides) one comparison may materialize.
+    #[serde(default = "default_max_expanded_bytes")]
+    pub max_expanded_bytes: u64,
 }
 
 fn default_jobs() -> usize {
     4
+}
+
+fn default_max_expanded_bytes() -> u64 {
+    DEFAULT_MAX_EXPANDED_BYTES
 }
 
 impl Default for DiffOptions {
@@ -110,6 +186,7 @@ impl Default for DiffOptions {
             ocr: None,
             decompile: None,
             jobs: 4,
+            max_expanded_bytes: DEFAULT_MAX_EXPANDED_BYTES,
         }
     }
 }
@@ -141,6 +218,7 @@ impl DiffEngine {
         let left_kind = detect_file(left);
         let right_kind = detect_file(right);
         let mut ctx = Ctx::default();
+        ctx.budget = Arc::new(ResourceBudget::new(self.options.max_expanded_bytes));
         ctx.excludes = self.build_excludes(&mut ctx).map(Arc::new);
         let pool = if self.options.jobs > 1 {
             Some(
@@ -170,6 +248,7 @@ impl DiffEngine {
             }
         };
         let completely_different = is_completely_different(&root);
+        let completeness = root.completeness_of();
         let mut report = DiffReport {
             tool: TOOL_NAME,
             version: TOOL_VERSION,
@@ -181,6 +260,8 @@ impl DiffEngine {
             warnings: ctx.warnings,
             elapsed_ms: started.elapsed().as_millis(),
             completely_different,
+            completeness,
+            expanded_bytes: ctx.budget.expanded_bytes(),
             decompiled: None,
         };
         if let Some(options) = &self.options.decompile
@@ -318,42 +399,34 @@ impl DiffEngine {
             return Ok(node);
         }
 
-        if left_meta.len() > self.options.max_file_bytes
-            || right_meta.len() > self.options.max_file_bytes
-        {
-            let stream = compare_streams(left, right)?;
-            ctx.summary.files_compared += 1;
-            if stream.equal {
-                ctx.summary.files_equal += 1;
-                return Ok(equal_node(
-                    label,
-                    kind,
-                    "files are byte-identical (large-file streaming check)",
-                ));
-            }
-            ctx.summary.files_changed += 1;
-            ctx.summary.bytes_differing += stream.differing_bytes;
-            ctx.warn(format!(
-                "{}: file exceeds the {} byte detailed-diff limit; only a summary is shown",
-                display_label(label),
-                self.options.max_file_bytes
-            ));
-            return Ok(DiffNode::new(
+        let limit = self.options.max_file_bytes;
+        if left_meta.len() > limit || right_meta.len() > limit {
+            return self.stream_summary_node(
                 label,
-                DiffStatus::Different,
-                DiffBody::Binary(BinaryDiff {
-                    left_len: left_meta.len(),
-                    right_len: right_meta.len(),
-                    differing_bytes: stream.differing_bytes,
-                    first_difference: stream.first_difference,
-                    rows: Vec::new(),
-                    truncated: true,
-                }),
-            ));
+                left,
+                right,
+                left_meta.len(),
+                right_meta.len(),
+                kind,
+                ctx,
+            );
         }
 
-        let left_bytes = fs::read(left)?;
-        let right_bytes = fs::read(right)?;
+        // The file may grow between the metadata check above and this read, so
+        // the read itself is bounded (TOCTOU) and re-checked against the limit.
+        let left_bytes = read_file_bounded(left, limit)?;
+        let right_bytes = read_file_bounded(right, limit)?;
+        if left_bytes.len() as u64 > limit || right_bytes.len() as u64 > limit {
+            return self.stream_summary_node(
+                label,
+                left,
+                right,
+                left_bytes.len() as u64,
+                right_bytes.len() as u64,
+                kind,
+                ctx,
+            );
+        }
 
         ctx.summary.files_compared += 1;
 
@@ -378,6 +451,50 @@ impl DiffEngine {
             ctx.summary.files_changed += 1;
         }
         Ok(node)
+    }
+
+    /// Streaming byte comparison for files above the detailed-diff limit: a
+    /// definitive same/different answer without loading either side.
+    #[allow(clippy::too_many_arguments)]
+    fn stream_summary_node(
+        &self,
+        label: &str,
+        left: &Path,
+        right: &Path,
+        left_len: u64,
+        right_len: u64,
+        kind: FileKind,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode> {
+        let stream = compare_streams(left, right)?;
+        ctx.summary.files_compared += 1;
+        if stream.equal {
+            ctx.summary.files_equal += 1;
+            return Ok(equal_node(
+                label,
+                kind,
+                "files are byte-identical (large-file streaming check)",
+            ));
+        }
+        ctx.summary.files_changed += 1;
+        ctx.summary.bytes_differing += stream.differing_bytes;
+        ctx.warn(format!(
+            "{}: file exceeds the {} byte detailed-diff limit; only a summary is shown",
+            display_label(label),
+            self.options.max_file_bytes
+        ));
+        Ok(DiffNode::new(
+            label,
+            DiffStatus::Different,
+            DiffBody::Binary(BinaryDiff {
+                left_len,
+                right_len,
+                differing_bytes: stream.differing_bytes,
+                first_difference: stream.first_difference,
+                rows: Vec::new(),
+                truncated: true,
+            }),
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -643,6 +760,7 @@ impl DiffEngine {
                         "nested archive depth limit reached",
                     ));
                 }
+                let omitted_before = ctx.omitted;
                 let result = match kind {
                     FileKind::Zip => self.compare_zip_bytes(label, left, right, depth, ctx),
                     FileKind::SevenZip => self.compare_7z_bytes(label, left, right, depth, ctx),
@@ -656,16 +774,20 @@ impl DiffEngine {
                     FileKind::Ar => self.compare_ar_bytes(label, left, right, depth, ctx),
                     _ => unreachable!(),
                 };
-                match result {
-                    Ok(node) => Ok(node),
+                let node = match result {
+                    Ok(node) => node,
                     Err(err) => {
                         ctx.warn(format!(
                             "{}: could not read archive ({err}); falling back to binary",
                             display_label(label)
                         ));
-                        Ok(self.compare_binary_bytes(label, left, right, ctx))
+                        self.compare_binary_bytes(label, left, right, ctx)
                     }
-                }
+                };
+                // Readers bump `omitted` when a per-entry limit or the resource
+                // budget made them skip an entry; the archive is then only
+                // partially compared even if every kept entry is equal.
+                Ok(complete_unless(node, ctx.omitted > omitted_before))
             }
             FileKind::Pdf | FileKind::Ofd | FileKind::Docx | FileKind::Pptx => {
                 Ok(self.compare_document_bytes(label, left, right, kind, ctx))
@@ -1674,8 +1796,9 @@ impl DiffEngine {
         }
         let display = display_label(label).to_string();
         let excludes = ctx.excludes.clone();
+        let budget = ctx.budget.clone();
         let process = |key: &String| {
-            let mut local = Ctx::with_excludes(excludes.clone());
+            let mut local = Ctx::child(excludes.clone(), budget.clone());
             let node = compare_one(key, &mut local);
             if let Some(progress) = &self.progress
                 && progress.enabled()
@@ -1711,6 +1834,13 @@ impl DiffEngine {
     ) -> Result<DiffNode> {
         let left_walk = self.collect_files(left, ctx)?;
         let right_walk = self.collect_files(right, ctx)?;
+        if left_walk.scan_truncated || right_walk.scan_truncated {
+            ctx.warn(format!(
+                "{}: directory entry limit ({}) reached; the scan stopped and the rest was not scanned",
+                display_label(label),
+                self.options.max_dir_entries
+            ));
+        }
         let left_files = &left_walk.files;
         let right_files = &right_walk.files;
 
@@ -1783,7 +1913,9 @@ impl DiffEngine {
             },
         )?;
 
-        Ok(DiffNode::new(
+        let truncated =
+            comparison.truncated || left_walk.scan_truncated || right_walk.scan_truncated;
+        let node = DiffNode::new(
             label,
             entries_status(&comparison.entries),
             DiffBody::Directory(DirectoryDiff {
@@ -1791,7 +1923,8 @@ impl DiffEngine {
                 total_entries: comparison.total_entries,
                 truncated: comparison.truncated,
             }),
-        ))
+        );
+        Ok(complete_unless(node, truncated))
     }
 
     fn compare_zip_bytes(
@@ -1858,6 +1991,7 @@ impl DiffEngine {
                         "{}: archive entry {name} is larger than the detailed-diff limit",
                         display_label(label)
                     ));
+                    ctx.omit();
                     return Ok(true);
                 }
                 let mut data = Vec::new();
@@ -1869,7 +2003,11 @@ impl DiffEngine {
                         "{}: archive entry {name} exceeds the detailed-diff limit",
                         display_label(label)
                     ));
+                    ctx.omit();
                     return Ok(true);
+                }
+                if !ctx.charge_expanded(label, data.len()) {
+                    return Ok(false);
                 }
                 entries.insert(name, data);
                 Ok(true)
@@ -1945,6 +2083,7 @@ impl DiffEngine {
                     display_label(label),
                     self.options.max_zip_entries
                 ));
+                ctx.omit();
                 break;
             }
             if file.metadata.size() as u64 > self.options.max_file_bytes {
@@ -1952,6 +2091,7 @@ impl DiffEngine {
                     "{}: archive entry {name} is larger than the detailed-diff limit",
                     display_label(label)
                 ));
+                ctx.omit();
                 continue;
             }
             let mut data = Vec::new();
@@ -1962,7 +2102,11 @@ impl DiffEngine {
                     "{}: archive entry {name} exceeds the detailed-diff limit",
                     display_label(label)
                 ));
+                ctx.omit();
                 continue;
+            }
+            if !ctx.charge_expanded(label, data.len()) {
+                break;
             }
             entries.insert(name, data);
         }
@@ -2007,6 +2151,7 @@ impl DiffEngine {
                 self.options.max_zip_entries
             ));
             names.truncate(self.options.max_zip_entries);
+            ctx.omit();
         }
         let mut entries = BTreeMap::new();
         for name in names {
@@ -2021,7 +2166,11 @@ impl DiffEngine {
                     "{}: archive entry {name} exceeds the detailed-diff limit",
                     display_label(label)
                 ));
+                ctx.omit();
                 continue;
+            }
+            if !ctx.charge_expanded(label, data.len()) {
+                break;
             }
             entries.insert(name, data);
         }
@@ -2089,8 +2238,15 @@ impl DiffEngine {
                 toc.len()
             )));
         }
-        let xml = String::from_utf8(toc)
-            .map_err(|_| DiffError::Invalid("xar: table of contents is not UTF-8".to_string()))?;
+        let xml = if ctx.charge_expanded(label, toc.len()) {
+            String::from_utf8(toc).map_err(|_| {
+                DiffError::Invalid("xar: table of contents is not UTF-8".to_string())
+            })?
+        } else {
+            return Err(DiffError::Invalid(
+                "xar: table of contents exceeds the expanded-bytes budget".to_string(),
+            ));
+        };
         let heap = &bytes[toc_end..];
 
         #[derive(Default)]
@@ -2199,6 +2355,7 @@ impl DiffEngine {
                         } else if frame.kind == "symlink" {
                             if entries.len() >= self.options.max_zip_entries {
                                 truncated = true;
+                                ctx.omit();
                                 break;
                             }
                             let mut path = directories.join("/");
@@ -2207,10 +2364,15 @@ impl DiffEngine {
                             }
                             path.push_str(&frame.name);
                             let data = format!("symlink -> {}", frame.link).into_bytes();
+                            if !ctx.charge_expanded(label, data.len()) {
+                                truncated = true;
+                                break;
+                            }
                             entries.insert(path, data);
                         } else if frame.kind.is_empty() || frame.kind == "file" {
                             if entries.len() >= self.options.max_zip_entries {
                                 truncated = true;
+                                ctx.omit();
                                 break;
                             }
                             if frame.size > self.options.max_file_bytes {
@@ -2219,6 +2381,7 @@ impl DiffEngine {
                                     display_label(label),
                                     frame.name
                                 ));
+                                ctx.omit();
                                 continue;
                             }
                             let mut path = directories.join("/");
@@ -2286,6 +2449,7 @@ impl DiffEngine {
                                     display_label(label),
                                     frame.name
                                 ));
+                                ctx.omit();
                                 continue;
                             }
                             if data.len() as u64 != frame.size {
@@ -2294,6 +2458,10 @@ impl DiffEngine {
                                     data.len(),
                                     frame.size
                                 )));
+                            }
+                            if !ctx.charge_expanded(label, data.len()) {
+                                truncated = true;
+                                break;
                             }
                             entries.insert(path, data);
                         }
@@ -2384,6 +2552,7 @@ impl DiffEngine {
                     display_label(label),
                     self.options.max_zip_entries
                 ));
+                ctx.omit();
                 break;
             }
             if data.len() as u64 > self.options.max_file_bytes {
@@ -2391,7 +2560,11 @@ impl DiffEngine {
                     "{}: archive entry {name} is larger than the detailed-diff limit",
                     display_label(label)
                 ));
+                ctx.omit();
                 continue;
+            }
+            if !ctx.charge_expanded(label, data.len()) {
+                break;
             }
             entries.insert(name, data.to_vec());
         }
@@ -2472,6 +2645,7 @@ impl DiffEngine {
                             display_label(label),
                             self.options.max_zip_entries
                         ));
+                        ctx.omit();
                         return Ok(());
                     }
                     if file.size() as u64 > self.options.max_file_bytes {
@@ -2479,6 +2653,7 @@ impl DiffEngine {
                             "{}: archive entry {path} is larger than the detailed-diff limit",
                             display_label(label)
                         ));
+                        ctx.omit();
                         continue;
                     }
                     let mut data = Vec::new();
@@ -2490,7 +2665,11 @@ impl DiffEngine {
                             "{}: archive entry {path} exceeds the detailed-diff limit",
                             display_label(label)
                         ));
+                        ctx.omit();
                         continue;
+                    }
+                    if !ctx.charge_expanded(label, data.len()) {
+                        return Ok(());
                     }
                     entries.insert(path, data);
                 }
@@ -2613,6 +2792,7 @@ impl DiffEngine {
                     display_label(label),
                     self.options.max_zip_entries
                 ));
+                ctx.omit();
                 break;
             }
             if data.len() as u64 > self.options.max_file_bytes {
@@ -2620,7 +2800,11 @@ impl DiffEngine {
                     "{}: archive entry {name} is larger than the detailed-diff limit",
                     display_label(label)
                 ));
+                ctx.omit();
                 continue;
+            }
+            if !ctx.charge_expanded(label, data.len()) {
+                break;
             }
             entries.insert(name, data.to_vec());
         }
@@ -2744,7 +2928,7 @@ impl DiffEngine {
             },
         )?;
 
-        Ok(DiffNode::new(
+        let node = DiffNode::new(
             label,
             entries_status(&comparison.entries),
             DiffBody::Archive(ArchiveDiff {
@@ -2753,7 +2937,8 @@ impl DiffEngine {
                 total_entries: comparison.total_entries,
                 truncated: comparison.truncated,
             }),
-        ))
+        );
+        Ok(complete_unless(node, comparison.truncated))
     }
 
     fn decompress_gzip(&self, bytes: &[u8], label: &str, ctx: &mut Ctx) -> Option<Vec<u8>> {
@@ -2813,6 +2998,9 @@ impl DiffEngine {
             ));
             return None;
         }
+        if !ctx.charge_expanded(label, data.len()) {
+            return None;
+        }
         Some(data)
     }
 
@@ -2825,6 +3013,11 @@ impl DiffEngine {
         let mut archive = ZipArchive::new(std::io::Cursor::new(bytes))?;
         let total = archive.len();
         let mut entries = BTreeMap::new();
+        if total > self.options.max_zip_entries {
+            // The loop below never visits the tail entries; account for them so
+            // the archive node is marked incomplete.
+            ctx.omit();
+        }
 
         for index in 0..total.min(self.options.max_zip_entries) {
             let (name, size, compressed_size, is_lzma) = {
@@ -2846,6 +3039,7 @@ impl DiffEngine {
                     "{}: archive entry {name} is larger than the detailed-diff limit",
                     display_label(label)
                 ));
+                ctx.omit();
                 continue;
             }
 
@@ -2855,6 +3049,7 @@ impl DiffEngine {
                         "{}: archive entry {name} has more compressed bytes than the detailed-diff limit",
                         display_label(label)
                     ));
+                    ctx.omit();
                     continue;
                 }
                 let mut raw = archive.by_index_raw(index).map_err(|error| {
@@ -2872,6 +3067,7 @@ impl DiffEngine {
                         "{}: archive entry {name} exceeds the detailed-diff limit",
                         display_label(label)
                     ));
+                    ctx.omit();
                     continue;
                 }
                 decode_zip_lzma(&compressed, size, self.options.max_file_bytes).map_err(
@@ -2891,11 +3087,15 @@ impl DiffEngine {
                         "{}: archive entry {name} exceeds the detailed-diff limit",
                         display_label(label)
                     ));
+                    ctx.omit();
                     continue;
                 }
                 data
             };
 
+            if !ctx.charge_expanded(label, data.len()) {
+                break;
+            }
             if entries.insert(name.clone(), data).is_some() {
                 ctx.warn(format!(
                     "{}: duplicate archive entry name {name}; keeping the last one",
@@ -2964,6 +3164,7 @@ impl DiffEngine {
                     display_label(label),
                     self.options.max_zip_entries
                 ));
+                ctx.omit();
                 break;
             }
             count += 1;
@@ -2989,6 +3190,7 @@ impl DiffEngine {
                     "{}: archive entry {name} is larger than the detailed-diff limit",
                     display_label(label)
                 ));
+                ctx.omit();
                 continue;
             }
 
@@ -3004,7 +3206,11 @@ impl DiffEngine {
                 } else {
                     "hardlink"
                 };
-                entries.insert(name, format!("{kind} -> {target}").into_bytes());
+                let link = format!("{kind} -> {target}").into_bytes();
+                if !ctx.charge_expanded(label, link.len()) {
+                    break;
+                }
+                entries.insert(name, link);
                 continue;
             }
 
@@ -3022,7 +3228,11 @@ impl DiffEngine {
                     "{}: archive entry {name} exceeds the detailed-diff limit",
                     display_label(label)
                 ));
+                ctx.omit();
                 continue;
+            }
+            if !ctx.charge_expanded(label, data.len()) {
+                break;
             }
             entries.insert(name, data);
         }
@@ -3072,6 +3282,13 @@ impl DiffEngine {
                     }
                     if let Some(key) = self.relative_key(entry.path(), root, ctx) {
                         walked.files.insert(key, entry.path().to_path_buf());
+                        // The scan shares the comparison's entry budget: once
+                        // the limit is reached, stop walking instead of
+                        // enumerating a tree that cannot be compared anyway.
+                        if walked.files.len() >= self.options.max_dir_entries {
+                            walked.scan_truncated = true;
+                            break;
+                        }
                     }
                 }
                 Err(err) => ctx.warn(format!("{}: directory walk error: {err}", root.display())),
@@ -3105,6 +3322,9 @@ struct WalkedFiles {
     files: BTreeMap<String, PathBuf>,
     /// Directories at the depth limit whose contents were not scanned.
     unscanned: Vec<String>,
+    /// True when the walk stopped at the directory entry limit before the
+    /// tree was fully enumerated.
+    scan_truncated: bool,
 }
 
 #[derive(Default)]
@@ -3112,6 +3332,12 @@ struct Ctx {
     summary: Summary,
     warnings: Vec<String>,
     excludes: Option<Arc<GlobSet>>,
+    /// Shared across every worker of one comparison.
+    budget: Arc<ResourceBudget>,
+    /// Entries, levels or streams that a limit omitted. Readers bump this when
+    /// they skip something, so the enclosing container can be marked
+    /// incomplete.
+    omitted: usize,
 }
 
 impl Ctx {
@@ -3124,16 +3350,43 @@ impl Ctx {
         }
     }
 
-    fn with_excludes(excludes: Option<Arc<GlobSet>>) -> Self {
+    /// A worker context: fresh counters, shared exclusion matcher and budget.
+    fn child(excludes: Option<Arc<GlobSet>>, budget: Arc<ResourceBudget>) -> Self {
         Self {
             summary: Summary::default(),
             warnings: Vec::new(),
             excludes,
+            budget,
+            omitted: 0,
         }
+    }
+
+    /// Records that a limit omitted an entry, level or stream.
+    fn omit(&mut self) {
+        self.omitted += 1;
+    }
+
+    /// Charges `bytes` of unpacked data against the shared budget. `false`
+    /// means the budget is spent: the warning is emitted once per comparison
+    /// and the caller must stop materializing more data.
+    fn charge_expanded(&mut self, label: &str, bytes: usize) -> bool {
+        if self.budget.charge(bytes as u64) {
+            return true;
+        }
+        if self.budget.announce_exhaustion() {
+            self.warn(format!(
+                "{}: expanded-bytes budget exhausted ({} bytes); remaining unpacked data is skipped",
+                display_label(label),
+                self.budget.max_expanded_bytes()
+            ));
+        }
+        self.omit();
+        false
     }
 
     fn merge(&mut self, other: Self) {
         self.summary.merge(&other.summary);
+        self.omitted += other.omitted;
         for warning in other.warnings {
             self.warn(warning);
         }
@@ -3300,6 +3553,16 @@ fn depth_limit_node(label: &str, note: &str) -> DiffNode {
             note: note.to_string(),
         }),
     )
+    .with_completeness(ComparisonCompleteness::Truncated)
+}
+
+/// Marks a container node incomplete when a limit truncated it.
+fn complete_unless(node: DiffNode, truncated: bool) -> DiffNode {
+    if truncated {
+        node.with_completeness(ComparisonCompleteness::Truncated)
+    } else {
+        node
+    }
 }
 
 /// Reads at most `limit + 1` bytes from `reader` so the caller can tell a
@@ -3312,6 +3575,15 @@ fn read_bounded<R: std::io::Read>(
     into: &mut Vec<u8>,
 ) -> std::io::Result<usize> {
     reader.take(limit.saturating_add(1)).read_to_end(into)
+}
+
+/// Bounded file read: even if the file grows after its metadata was checked,
+/// at most `limit + 1` bytes are materialized (TOCTOU).
+fn read_file_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    read_bounded(&mut file, limit, &mut bytes)?;
+    Ok(bytes)
 }
 
 /// Pre-allocation for a size declared inside an untrusted file. The declaration

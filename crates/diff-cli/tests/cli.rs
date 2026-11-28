@@ -315,6 +315,69 @@ fn max_depth_limits_nested_archives_and_validates_zero() {
 }
 
 #[test]
+fn exit_code_3_when_equal_but_truncated() {
+    let dir = tempfile::tempdir().unwrap();
+    let left = dir.path().join("left");
+    let right = dir.path().join("right");
+    std::fs::create_dir_all(&left).unwrap();
+    std::fs::create_dir_all(&right).unwrap();
+    for index in 0..3 {
+        std::fs::write(
+            left.join(format!("file{index}.txt")),
+            format!("same {index}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            right.join(format!("file{index}.txt")),
+            format!("same {index}\n"),
+        )
+        .unwrap();
+    }
+
+    let truncated = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--max-entries",
+        "1",
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_eq!(truncated.status.code(), Some(3), "{}", stderr(&truncated));
+    assert!(
+        stdout(&truncated).contains("TRUNCATED"),
+        "{}",
+        stdout(&truncated)
+    );
+
+    let json = stdout(&run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--max-entries",
+        "1",
+        "--format",
+        "json",
+        "--no-color",
+        "--no-progress",
+    ]));
+    assert!(json.contains("\"completeness\""), "{json}");
+    assert!(json.contains("truncated"), "{json}");
+
+    let complete = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--no-entry-limit",
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_eq!(complete.status.code(), Some(0), "{}", stderr(&complete));
+    assert!(
+        !stdout(&complete).contains("TRUNCATED"),
+        "{}",
+        stdout(&complete)
+    );
+}
+
+#[test]
 fn exit_codes_match_diff_convention() {
     let equal = run(&[&fixture("text/old.txt"), &fixture("text/old.txt")]);
     assert_eq!(equal.status.code(), Some(0));

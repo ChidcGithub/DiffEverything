@@ -678,6 +678,8 @@ pub fn history_report(
         warnings,
         elapsed_ms: started.elapsed().as_millis(),
         completely_different: false,
+        completeness: diff_core::model::ComparisonCompleteness::Complete,
+        expanded_bytes: 0,
         decompiled: None,
     })
 }

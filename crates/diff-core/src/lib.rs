@@ -24,4 +24,4 @@ pub mod sync;
 
 pub use engine::{DiffEngine, DiffOptions};
 pub use error::{DiffError, Result};
-pub use model::{DiffReport, DiffStatus, FileKind};
+pub use model::{ComparisonCompleteness, DiffReport, DiffStatus, FileKind};

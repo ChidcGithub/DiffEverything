@@ -22,6 +22,12 @@ pub fn render(report: &DiffReport) -> String {
         human_size(report.right.size)
     );
     let _ = writeln!(out, "| Status | **{}** |", report.status.label());
+    if !report.is_complete() {
+        let _ = writeln!(
+            out,
+            "| Completeness | **TRUNCATED** (part of the input was skipped by limits) |"
+        );
+    }
     if report.completely_different {
         let _ = writeln!(out, "| Result | **COMPLETELY DIFFERENT (>99% changed)** |");
     }

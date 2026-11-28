@@ -1,4 +1,4 @@
-use diff_core::model::{DiffBody, DiffStatus};
+use diff_core::model::{ComparisonCompleteness, DiffBody, DiffStatus};
 use diff_core::{DiffEngine, DiffOptions};
 use std::fs;
 use std::io::Write;
@@ -378,6 +378,77 @@ fn xar_table_of_contents_is_read_through_the_limit() {
         "{:?}",
         report.warnings
     );
+}
+
+#[test]
+fn directory_scan_stops_at_the_entry_limit_and_stays_indeterminate() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left");
+    let right = dir.path().join("right");
+    for root in [&left, &right] {
+        fs::create_dir_all(root).unwrap();
+        for index in 0..4 {
+            fs::write(root.join(format!("file{index}.txt")), "same\n").unwrap();
+        }
+    }
+
+    let options = DiffOptions {
+        max_dir_entries: 2,
+        ..DiffOptions::default()
+    };
+    let report = DiffEngine::new(options).compare(&left, &right).unwrap();
+    // Everything that was compared is equal, but the scan stopped after the
+    // entry limit, so the equal verdict only covers the compared part.
+    assert_eq!(report.status, DiffStatus::Equal);
+    assert_eq!(report.completeness, ComparisonCompleteness::Truncated);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("the rest was not scanned")),
+        "{:?}",
+        report.warnings
+    );
+
+    // Without the entry limit the same tree compares completely.
+    let report = DiffEngine::new(DiffOptions::default())
+        .compare(&left, &right)
+        .unwrap();
+    assert_eq!(report.status, DiffStatus::Equal);
+    assert_eq!(report.completeness, ComparisonCompleteness::Complete);
+}
+
+#[test]
+fn expanded_bytes_budget_limits_nested_archives() {
+    let dir = tempdir().unwrap();
+    // The inner archives differ, so the outer files are not byte-identical and
+    // the archive reader runs; its entries cannot be unpacked within the
+    // budget, so both sides end up empty and nothing differs.
+    let inner_left = zip_bytes(&[("a.txt", b"same text\n")]);
+    let inner_right = zip_bytes(&[("a.txt", b"same text 2\n")]);
+    let left = dir.path().join("left.zip");
+    let right = dir.path().join("right.zip");
+    fs::write(&left, zip_bytes(&[("inner.zip", inner_left.as_slice())])).unwrap();
+    fs::write(&right, zip_bytes(&[("inner.zip", inner_right.as_slice())])).unwrap();
+
+    // Unpacking the nested archive alone would exceed the budget, so the
+    // comparison stops before reading it; nothing differs, hence Equal.
+    let options = DiffOptions {
+        max_expanded_bytes: 10,
+        ..DiffOptions::default()
+    };
+    let report = DiffEngine::new(options).compare(&left, &right).unwrap();
+    assert_eq!(report.status, DiffStatus::Equal);
+    assert_eq!(report.completeness, ComparisonCompleteness::Truncated);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("expanded-bytes budget exhausted")),
+        "{:?}",
+        report.warnings
+    );
+    assert_eq!(report.expanded_bytes, 0);
 }
 
 #[test]
