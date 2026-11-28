@@ -1084,43 +1084,8 @@ fn run() -> Result<i32> {
         return Ok(code);
     }
 
-    if cli.detail == DetailMode::Full
-        && !cli.pdf_visual
-        && cli.sync.is_none()
-        && cli.base.is_none()
-        && cli.apply_patch.is_none()
-        && left.is_file()
-        && right.is_file()
-    {
-        let left_kind = diff_core::detect::detect_file(&left);
-        let right_kind = diff_core::detect::detect_file(&right);
-        let left_dex = left_kind == FileKind::Dex
-            || (left_kind == FileKind::Zip && diff_core::disassembly::archive_contains_dex(&left));
-        let right_dex = right_kind == FileKind::Dex
-            || (right_kind == FileKind::Zip
-                && diff_core::disassembly::archive_contains_dex(&right));
-        let left_code = matches!(left_kind, FileKind::Executable | FileKind::Dex)
-            || (left_kind == FileKind::Zip && diff_core::disassembly::archive_contains_code(&left));
-        let right_code = matches!(right_kind, FileKind::Executable | FileKind::Dex)
-            || (right_kind == FileKind::Zip
-                && diff_core::disassembly::archive_contains_code(&right));
-        if left_code || right_code {
-            let tool = match &cli.objdump {
-                Some(path) if path.is_file() => Some(path.clone()),
-                Some(path) => anyhow::bail!("objdump not found at {}", path.display()),
-                None => None,
-            };
-            // DEX-to-Java is an embedded decompiler: `--detail full` is the
-            // explicit request, so do not ask again when stdin is not a TTY.
-            // External objdump/unwinders still require the usual approval.
-            let builtin_dex = tool.is_none() && (left_dex || right_dex);
-            if builtin_dex || confirm_decompile(&left, &right, tool.as_deref(), cli.yes)? {
-                options.decompile = Some(diff_core::engine::DecompileOptions {
-                    objdump: tool,
-                    max_lines: 20_000,
-                });
-            }
-        }
+    if let Some(decompile) = resolve_decompile_options(&cli, &left, &right)? {
+        options.decompile = Some(decompile);
     }
 
     if cli.ocr || cli.tesseract.is_some() || cli.tessdata.is_some() {
@@ -1643,6 +1608,61 @@ fn changed_paths_text(report: &diff_core::DiffReport) -> String {
         }
     }
     out
+}
+
+fn resolve_decompile_options(
+    cli: &Cli,
+    left: &Path,
+    right: &Path,
+) -> Result<Option<diff_core::engine::DecompileOptions>> {
+    if cli.detail != DetailMode::Full
+        || cli.pdf_visual
+        || cli.sync.is_some()
+        || cli.base.is_some()
+        || cli.apply_patch.is_some()
+        || !left.is_file()
+        || !right.is_file()
+    {
+        return Ok(None);
+    }
+
+    let left_presence = code_presence(diff_core::detect::detect_file(left), left);
+    let right_presence = code_presence(diff_core::detect::detect_file(right), right);
+    if !left_presence.has_code() && !right_presence.has_code() {
+        return Ok(None);
+    }
+
+    let tool = match &cli.objdump {
+        Some(path) if path.is_file() => Some(path.clone()),
+        Some(path) => anyhow::bail!("objdump not found at {}", path.display()),
+        None => None,
+    };
+    let builtin_dex = tool.is_none() && (left_presence.dex || right_presence.dex);
+    // Interactive sessions always get the approval prompt. Headless
+    // DEX/APK runs may use the embedded decompiler directly, because
+    // --detail full already expresses the request and there is no terminal
+    // available to answer a prompt. External objdump always prompts.
+    let allow = (builtin_dex && !io::stdin().is_terminal())
+        || confirm_decompile(left, right, tool.as_deref(), cli.yes)?;
+    Ok(allow.then(|| diff_core::engine::DecompileOptions {
+        objdump: tool,
+        max_lines: 20_000,
+    }))
+}
+
+fn code_presence(kind: FileKind, path: &Path) -> diff_core::disassembly::ArchiveCodePresence {
+    match kind {
+        FileKind::Dex => diff_core::disassembly::ArchiveCodePresence {
+            dex: true,
+            native: false,
+        },
+        FileKind::Executable => diff_core::disassembly::ArchiveCodePresence {
+            dex: false,
+            native: true,
+        },
+        FileKind::Zip => diff_core::disassembly::archive_code_presence(path),
+        _ => diff_core::disassembly::ArchiveCodePresence::default(),
+    }
 }
 
 fn confirm_decompile(left: &Path, right: &Path, tool: Option<&Path>, yes: bool) -> Result<bool> {

@@ -12,6 +12,32 @@ fn strips_instruction_and_label_addresses() {
 }
 
 #[test]
+fn archive_code_presence_scans_past_entry_2000() {
+    use std::io::Write as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("late-dex.apk");
+    let mut buffer = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buffer));
+        let options = zip::write::SimpleFileOptions::default();
+        for index in 0..2_100 {
+            writer
+                .start_file(format!("res/{index:05}.txt"), options)
+                .unwrap();
+            writer.write_all(b"x").unwrap();
+        }
+        writer.start_file("classes.dex", options).unwrap();
+        writer.write_all(b"dex\n035\0").unwrap();
+        writer.finish().unwrap();
+    }
+    std::fs::write(&path, &buffer).unwrap();
+    let presence = archive_code_presence(&path);
+    assert!(presence.dex, "{presence:?}");
+    assert!(!presence.native);
+}
+
+#[test]
 fn disassembles_x86_elf_with_embedded_decoder() {
     let bytes = std::fs::read(fixture("executable/hello-old")).unwrap();
     let text = disassemble_bytes(&bytes).unwrap();

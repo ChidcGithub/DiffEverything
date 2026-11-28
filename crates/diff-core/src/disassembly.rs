@@ -295,63 +295,59 @@ fn strip_address(line: &str) -> String {
     line.to_string()
 }
 
-/// Return true when a ZIP/APK contains code-bearing entries.
-/// True when a ZIP/APK contains a DEX payload. Used to authorize the built-in
-/// DEX-to-Java decompiler automatically under `--detail full`.
-pub fn archive_contains_dex(path: &Path) -> bool {
-    let Ok(file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let Ok(mut archive) = ZipArchive::new(file) else {
-        return false;
-    };
-    for index in 0..archive.len().min(2_000) {
-        let Ok(mut entry) = archive.by_index(index) else {
-            continue;
-        };
-        if entry.name().to_ascii_lowercase().ends_with(".dex") {
-            return true;
-        }
-        let mut header = [0u8; 4];
-        use std::io::Read as _;
-        if entry.read_exact(&mut header).is_ok() && header == *b"dex\n" {
-            return true;
-        }
-    }
-    false
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ArchiveCodePresence {
+    pub dex: bool,
+    pub native: bool,
 }
 
-pub fn archive_contains_code(path: &Path) -> bool {
+impl ArchiveCodePresence {
+    pub fn has_code(self) -> bool {
+        self.dex || self.native
+    }
+}
+
+/// Scan a ZIP/APK's central directory once for DEX and native code entries.
+/// Extension checks cover every entry; magic-byte probing is limited to the
+/// first 2,000 entries to avoid decompressing a huge archive during preflight.
+pub fn archive_code_presence(path: &Path) -> ArchiveCodePresence {
     let Ok(file) = std::fs::File::open(path) else {
-        return false;
+        return ArchiveCodePresence::default();
     };
     let Ok(mut archive) = ZipArchive::new(file) else {
-        return false;
+        return ArchiveCodePresence::default();
     };
-    for index in 0..archive.len().min(2_000) {
+    let mut presence = ArchiveCodePresence::default();
+    for index in 0..archive.len() {
         let Ok(mut entry) = archive.by_index(index) else {
             continue;
         };
         let name = entry.name().to_ascii_lowercase();
-        if name.ends_with(".dex")
-            || name.ends_with(".so")
+        if name.ends_with(".dex") {
+            presence.dex = true;
+        } else if name.ends_with(".so")
             || name.ends_with(".dll")
             || name.ends_with(".exe")
             || name.ends_with(".elf")
         {
-            return true;
+            presence.native = true;
         }
-        let mut header = [0u8; 4];
-        use std::io::Read as _;
-        if entry.read_exact(&mut header).is_ok()
-            && (header == *b"\x7fELF"
-                || header == *b"dex\n"
-                || (header[0] == b'M' && header[1] == b'Z'))
-        {
-            return true;
+        if presence.dex && presence.native {
+            break;
+        }
+        if index < 2_000 {
+            let mut header = [0u8; 4];
+            use std::io::Read as _;
+            if entry.read_exact(&mut header).is_ok() {
+                if header == *b"dex\n" {
+                    presence.dex = true;
+                } else if header == *b"\x7fELF" || (header[0] == b'M' && header[1] == b'Z') {
+                    presence.native = true;
+                }
+            }
         }
     }
-    false
+    presence
 }
 
 #[cfg(test)]
