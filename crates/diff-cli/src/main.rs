@@ -209,8 +209,8 @@ struct Cli {
     #[arg(help_heading = "Progress", long)]
     no_progress: bool,
 
-    /// Remove all analysis limits (file size, expanded bytes, entries, rows,
-    /// cells, depth and PDF pages)
+    /// Remove all analysis limits (file size, expanded bytes, in-flight bytes,
+    /// entries, rows, cells, depth and PDF pages)
     #[arg(
         help_heading = "Limits",
         long,
@@ -224,6 +224,7 @@ struct Cli {
             "no_entry_limit",
             "max_depth",
             "max_expanded_bytes",
+            "max_inflight_bytes",
             "pdf_max_pages"
         ]
     )]
@@ -275,6 +276,16 @@ struct Cli {
         value_name = "BYTES"
     )]
     max_expanded_bytes: u64,
+
+    /// Maximum bytes of file contents held in flight at the same time by the
+    /// parallel workers; 0 disables the bound
+    #[arg(
+        help_heading = "Limits",
+        long,
+        default_value_t = diff_core::engine::DEFAULT_MAX_INFLIGHT_BYTES,
+        value_name = "BYTES"
+    )]
+    max_inflight_bytes: u64,
 
     /// Write a visual heatmap for two image inputs
     #[arg(help_heading = "Images", long, value_name = "FILE")]
@@ -663,6 +674,7 @@ fn run() -> Result<i32> {
         options.max_workbook_cells = usize::MAX;
         options.max_depth = usize::MAX;
         options.max_expanded_bytes = UNLIMITED_FILE_BYTES;
+        options.max_inflight_bytes = 0;
         if !cli.quiet {
             eprintln!(
                 "warning: all analysis limits disabled; very large inputs may exhaust memory or take a long time"
@@ -681,6 +693,7 @@ fn run() -> Result<i32> {
         }
         options.max_depth = cli.max_depth;
         options.max_expanded_bytes = cli.max_expanded_bytes;
+        options.max_inflight_bytes = cli.max_inflight_bytes;
         if let Some(max_entries) = cli.max_entries {
             options.max_dir_entries = max_entries;
             options.max_zip_entries = max_entries;

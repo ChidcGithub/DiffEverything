@@ -15,8 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use zip::ZipArchive;
 
@@ -59,6 +59,80 @@ pub const UNLIMITED_FILE_BYTES: u64 = u64::MAX / 2;
 /// decompressed streams, both sides, every nesting level) one comparison may
 /// produce. Per-entry limits bound one payload; this bounds their sum.
 pub const DEFAULT_MAX_EXPANDED_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Default budget for the bytes of file contents the parallel workers of one
+/// comparison may hold in flight at the same time.
+pub const DEFAULT_MAX_INFLIGHT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Bounds the bytes of file contents the workers of one comparison may hold in
+/// flight at the same time. Each task acquires its footprint (left + right
+/// file size) before its contents are read and releases it when the node is
+/// built, so the parallel work set stays bounded regardless of `jobs`: more
+/// workers means more small tasks in flight, never more bytes.
+///
+/// A task whose footprint alone exceeds the budget is clamped to it, so it
+/// always runs instead of deadlocking. `max_bytes == 0` disables the gate.
+#[derive(Debug)]
+struct InflightGate {
+    max_bytes: u64,
+    used: std::sync::Mutex<u64>,
+    available: std::sync::Condvar,
+}
+
+impl InflightGate {
+    fn new(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            used: std::sync::Mutex::new(0),
+            available: std::sync::Condvar::new(),
+        }
+    }
+
+    fn acquire(&self, bytes: u64) -> InflightPermit<'_> {
+        let footprint = if self.max_bytes == 0 {
+            0
+        } else {
+            bytes.min(self.max_bytes)
+        };
+        if footprint == 0 {
+            return InflightPermit {
+                gate: self,
+                footprint: 0,
+            };
+        }
+        let mut used = self.used.lock().expect("in-flight gate poisoned");
+        while *used + footprint > self.max_bytes {
+            used = self.available.wait(used).expect("in-flight gate poisoned");
+        }
+        *used += footprint;
+        InflightPermit {
+            gate: self,
+            footprint,
+        }
+    }
+
+    fn release(&self, footprint: u64) {
+        if footprint == 0 {
+            return;
+        }
+        let mut used = self.used.lock().expect("in-flight gate poisoned");
+        *used -= footprint;
+        self.available.notify_all();
+    }
+}
+
+/// Held while a task's file contents are in memory; releases the footprint on
+/// drop, waking the workers that are waiting for room.
+struct InflightPermit<'a> {
+    gate: &'a InflightGate,
+    footprint: u64,
+}
+
+impl Drop for InflightPermit<'_> {
+    fn drop(&mut self) {
+        self.gate.release(self.footprint);
+    }
+}
 
 /// Shared budget for the total unpacked bytes a comparison may produce.
 ///
@@ -158,6 +232,10 @@ pub struct DiffOptions {
     /// nesting level, both sides) one comparison may materialize.
     #[serde(default = "default_max_expanded_bytes")]
     pub max_expanded_bytes: u64,
+    /// Bytes of file contents the parallel workers may hold in flight at the
+    /// same time; `0` disables the bound.
+    #[serde(default = "default_max_inflight_bytes")]
+    pub max_inflight_bytes: u64,
 }
 
 fn default_jobs() -> usize {
@@ -166,6 +244,10 @@ fn default_jobs() -> usize {
 
 fn default_max_expanded_bytes() -> u64 {
     DEFAULT_MAX_EXPANDED_BYTES
+}
+
+fn default_max_inflight_bytes() -> u64 {
+    DEFAULT_MAX_INFLIGHT_BYTES
 }
 
 impl Default for DiffOptions {
@@ -192,6 +274,7 @@ impl Default for DiffOptions {
             decompile: None,
             jobs: 4,
             max_expanded_bytes: DEFAULT_MAX_EXPANDED_BYTES,
+            max_inflight_bytes: DEFAULT_MAX_INFLIGHT_BYTES,
         }
     }
 }
@@ -199,11 +282,14 @@ impl Default for DiffOptions {
 pub struct DiffEngine {
     options: DiffOptions,
     progress: Option<ProgressHandle>,
+    gate: InflightGate,
 }
 
 impl DiffEngine {
     pub fn new(options: DiffOptions) -> Self {
+        let gate = InflightGate::new(options.max_inflight_bytes);
         Self {
+            gate,
             options,
             progress: None,
         }
@@ -419,9 +505,17 @@ impl DiffEngine {
 
         // The file may grow between the metadata check above and this read, so
         // the read itself is bounded (TOCTOU) and re-checked against the limit.
+        // Bounded scheduler: acquire the in-flight footprint (left + right
+        // file size) before the contents are materialized and release it when
+        // the node is built, so the parallel work set stays inside
+        // `max_inflight_bytes` no matter how many workers there are.
+        let permit = self
+            .gate
+            .acquire(left_meta.len().saturating_add(right_meta.len()));
         let left_bytes = read_file_bounded(left, limit)?;
         let right_bytes = read_file_bounded(right, limit)?;
         if left_bytes.len() as u64 > limit || right_bytes.len() as u64 > limit {
+            drop(permit);
             return self.stream_summary_node(
                 label,
                 left,
@@ -519,296 +613,21 @@ impl DiffEngine {
             return Ok(equal_node(label, kind, "contents are byte-identical"));
         }
 
-        match kind {
-            FileKind::Text => {
-                let has_syntax = tokens::language_for_name(hint).is_some();
-                if has_syntax
-                    && matches!(self.options.mode, DiffMode::Tree | DiffMode::Graph)
-                    && let Some(node) = self.compare_tree_bytes(label, hint, left, right, ctx)
-                {
-                    return Ok(node);
-                }
-                let token_mode = self.options.mode == DiffMode::Token
-                    || (self.options.mode == DiffMode::Text
-                        && self.options.ignore_comments
-                        && has_syntax);
-                if token_mode
-                    && let Some(node) = self.compare_token_bytes(label, hint, left, right, ctx)
-                {
-                    return Ok(node);
-                }
-                if self.options.ignore_comments && !has_syntax {
-                    ctx.warn(format!(
-                        "{}: --ignore-comments is only supported for known source languages; using text diff",
-                        display_label(label)
-                    ));
-                } else if self.options.mode != DiffMode::Text && !has_syntax {
-                    ctx.warn(format!(
-                        "{}: no tree-sitter parser for this file type; using text diff",
-                        display_label(label)
-                    ));
-                }
-                Ok(self.compare_text_bytes(label, left, right, "text", FileKind::Text, ctx))
-            }
-            FileKind::Json
-            | FileKind::Yaml
-            | FileKind::Toml
-            | FileKind::Ini
-            | FileKind::Xml
-            | FileKind::Html
-            | FileKind::Plist
-            | FileKind::Pickle
-            | FileKind::Mo
-            | FileKind::Wasm
-            | FileKind::JavaClass
-            | FileKind::AndroidXml
-            | FileKind::GitIndex
-            | FileKind::Ico
-            | FileKind::SshPublicKey
-            | FileKind::Structured
-            | FileKind::Cbor
-            | FileKind::MessagePack
-            | FileKind::Protobuf
-            | FileKind::Parquet
-            | FileKind::Avro
-            | FileKind::Orc
-            | FileKind::Rtf
-            | FileKind::Eml
-            | FileKind::Odt
-            | FileKind::Odp
-            | FileKind::Epub
-            | FileKind::Squashfs
-            | FileKind::Snap
-            | FileKind::AppImage
-            | FileKind::Flatpak
-            | FileKind::Dmg
-            | FileKind::Msix
-            | FileKind::Aab
-            | FileKind::Ext4 => {
-                Ok(self
-                    .compare_structured_bytes(label, hint, left, right, left_kind, right_kind, ctx))
-            }
-            FileKind::Notebook => Ok(self.compare_notebook_bytes(label, left, right, ctx)),
-            FileKind::Sqlite => Ok(self.compare_sqlite_bytes(label, left, right, ctx)),
-            FileKind::Executable => Ok(self.compare_executable_bytes(label, left, right, ctx)),
-            FileKind::Dex => Ok(self.compare_dex_bytes(label, left, right, ctx)),
-            FileKind::Font => Ok(self.compare_font_bytes(label, left, right, ctx)),
-            FileKind::Csv => Ok(self.compare_table_bytes(label, left, right, hint, ctx)),
-            FileKind::Image => Ok(self.compare_image_bytes(label, left, right, ctx)),
-            FileKind::Gzip => {
-                if !can_expand(depth, self.options.max_depth) {
-                    return Ok(depth_limit_node(label, "nested gzip depth limit reached"));
-                }
-                let left_inner = match self.decompress_gzip(left, label, ctx) {
-                    Some(data) => data,
-                    None => {
-                        return Ok(self.compare_binary_bytes(label, left, right, ctx));
-                    }
-                };
-                let right_inner = match self.decompress_gzip(right, label, ctx) {
-                    Some(data) => data,
-                    None => {
-                        return Ok(self.compare_binary_bytes(label, left, right, ctx));
-                    }
-                };
-                let inner_hint = if hint.to_ascii_lowercase().ends_with(".ipk") {
-                    "package.tar"
-                } else {
-                    hint.strip_suffix(".gz").unwrap_or(hint)
-                };
-                let left_kind = detect_bytes(inner_hint, &left_inner);
-                let right_kind = detect_bytes(inner_hint, &right_inner);
-                Ok(self.compare_bytes_internal(
-                    label,
-                    inner_hint,
-                    &left_inner,
-                    &right_inner,
-                    left_kind,
-                    right_kind,
-                    depth + 1,
-                    ctx,
-                )?)
-            }
-            FileKind::Zstd => {
-                if !can_expand(depth, self.options.max_depth) {
-                    return Ok(depth_limit_node(label, "nested zstd depth limit reached"));
-                }
-                let left_inner = match self.decompress_zstd(left, label, ctx) {
-                    Some(data) => data,
-                    None => {
-                        return Ok(self.compare_binary_bytes(label, left, right, ctx));
-                    }
-                };
-                let right_inner = match self.decompress_zstd(right, label, ctx) {
-                    Some(data) => data,
-                    None => {
-                        return Ok(self.compare_binary_bytes(label, left, right, ctx));
-                    }
-                };
-                let inner_hint = hint.strip_suffix(".zst").unwrap_or(hint);
-                let left_kind = detect_bytes(inner_hint, &left_inner);
-                let right_kind = detect_bytes(inner_hint, &right_inner);
-                Ok(self.compare_bytes_internal(
-                    label,
-                    inner_hint,
-                    &left_inner,
-                    &right_inner,
-                    left_kind,
-                    right_kind,
-                    depth + 1,
-                    ctx,
-                )?)
-            }
-            FileKind::Bzip2 => {
-                if !can_expand(depth, self.options.max_depth) {
-                    return Ok(depth_limit_node(label, "nested bzip2 depth limit reached"));
-                }
-                let left_inner = match self.decompress_bzip2(left, label, ctx) {
-                    Some(data) => data,
-                    None => {
-                        return Ok(self.compare_binary_bytes(label, left, right, ctx));
-                    }
-                };
-                let right_inner = match self.decompress_bzip2(right, label, ctx) {
-                    Some(data) => data,
-                    None => {
-                        return Ok(self.compare_binary_bytes(label, left, right, ctx));
-                    }
-                };
-                let inner_hint = hint.strip_suffix(".bz2").unwrap_or(hint);
-                let left_kind = detect_bytes(inner_hint, &left_inner);
-                let right_kind = detect_bytes(inner_hint, &right_inner);
-                Ok(self.compare_bytes_internal(
-                    label,
-                    inner_hint,
-                    &left_inner,
-                    &right_inner,
-                    left_kind,
-                    right_kind,
-                    depth + 1,
-                    ctx,
-                )?)
-            }
-            FileKind::Xz => {
-                if !can_expand(depth, self.options.max_depth) {
-                    return Ok(depth_limit_node(label, "nested xz depth limit reached"));
-                }
-                let left_inner = match self.decompress_xz(left, label, ctx) {
-                    Some(data) => data,
-                    None => {
-                        return Ok(self.compare_binary_bytes(label, left, right, ctx));
-                    }
-                };
-                let right_inner = match self.decompress_xz(right, label, ctx) {
-                    Some(data) => data,
-                    None => {
-                        return Ok(self.compare_binary_bytes(label, left, right, ctx));
-                    }
-                };
-                let inner_hint = hint.strip_suffix(".xz").unwrap_or(hint);
-                let left_kind = detect_bytes(inner_hint, &left_inner);
-                let right_kind = detect_bytes(inner_hint, &right_inner);
-                Ok(self.compare_bytes_internal(
-                    label,
-                    inner_hint,
-                    &left_inner,
-                    &right_inner,
-                    left_kind,
-                    right_kind,
-                    depth + 1,
-                    ctx,
-                )?)
-            }
-            FileKind::Lz4 => {
-                if !can_expand(depth, self.options.max_depth) {
-                    return Ok(depth_limit_node(label, "nested lz4 depth limit reached"));
-                }
-                let left_inner = match self.decompress_lz4(left, label, ctx) {
-                    Some(data) => data,
-                    None => {
-                        return Ok(self.compare_binary_bytes(label, left, right, ctx));
-                    }
-                };
-                let right_inner = match self.decompress_lz4(right, label, ctx) {
-                    Some(data) => data,
-                    None => {
-                        return Ok(self.compare_binary_bytes(label, left, right, ctx));
-                    }
-                };
-                let inner_hint = hint.strip_suffix(".lz4").unwrap_or(hint);
-                let left_kind = detect_bytes(inner_hint, &left_inner);
-                let right_kind = detect_bytes(inner_hint, &right_inner);
-                Ok(self.compare_bytes_internal(
-                    label,
-                    inner_hint,
-                    &left_inner,
-                    &right_inner,
-                    left_kind,
-                    right_kind,
-                    depth + 1,
-                    ctx,
-                )?)
-            }
-            FileKind::Zip
-            | FileKind::SevenZip
-            | FileKind::Tar
-            | FileKind::Deb
-            | FileKind::Rpm
-            | FileKind::Iso
-            | FileKind::Cpio
-            | FileKind::Cab
-            | FileKind::Xar
-            | FileKind::Ar => {
-                if !can_expand(depth, self.options.max_depth) {
-                    return Ok(depth_limit_node(
-                        label,
-                        "nested archive depth limit reached",
-                    ));
-                }
-                let omitted_before = ctx.omitted;
-                let result = match kind {
-                    FileKind::Zip => self.compare_zip_bytes(label, left, right, depth, ctx),
-                    FileKind::SevenZip => self.compare_7z_bytes(label, left, right, depth, ctx),
-                    FileKind::Tar => self.compare_tar_bytes(label, left, right, depth, ctx),
-                    FileKind::Deb => self.compare_deb_bytes(label, left, right, depth, ctx),
-                    FileKind::Rpm => self.compare_rpm_bytes(label, left, right, depth, ctx),
-                    FileKind::Iso => self.compare_iso_bytes(label, left, right, depth, ctx),
-                    FileKind::Cpio => self.compare_cpio_bytes(label, left, right, depth, ctx),
-                    FileKind::Cab => self.compare_cab_bytes(label, left, right, depth, ctx),
-                    FileKind::Xar => self.compare_xar_bytes(label, left, right, depth, ctx),
-                    FileKind::Ar => self.compare_ar_bytes(label, left, right, depth, ctx),
-                    _ => unreachable!(),
-                };
-                let node = match result {
-                    Ok(node) => node,
-                    Err(err) => {
-                        ctx.warn(format!(
-                            "{}: could not read archive ({err}); falling back to binary",
-                            display_label(label)
-                        ));
-                        self.compare_binary_bytes(label, left, right, ctx)
-                    }
-                };
-                // Readers bump `omitted` when a per-entry limit or the resource
-                // budget made them skip an entry; the archive is then only
-                // partially compared even if every kept entry is equal.
-                Ok(complete_unless(node, ctx.omitted > omitted_before))
-            }
-            FileKind::Pdf | FileKind::Ofd | FileKind::Docx | FileKind::Pptx => {
-                Ok(self.compare_document_bytes(label, left, right, kind, ctx))
-            }
-            FileKind::Xlsx => Ok(self.compare_workbook_bytes(label, left, right, hint, ctx)),
-            FileKind::Office => {
-                ctx.warn(format!(
-                    "{}: legacy Office format diff is not implemented; falling back to binary",
-                    display_label(label)
-                ));
-                Ok(self.compare_binary_bytes(label, left, right, ctx))
-            }
-            FileKind::Audio | FileKind::Binary | FileKind::Unknown | FileKind::Directory => {
-                Ok(self.compare_binary_bytes(label, left, right, ctx))
-            }
-            _ => Ok(self.compare_binary_bytes(label, left, right, ctx)),
+        // Parser registry: dispatch by the effective kind. Kinds without a
+        // registered parser fall back to a binary comparison.
+        let args = CompareArgs {
+            label,
+            hint,
+            left,
+            right,
+            left_kind,
+            right_kind,
+            kind,
+            depth,
+        };
+        match parser_for(kind) {
+            Some(parser) => parser.compare_bytes(self, args, ctx),
+            None => Ok(self.compare_binary_bytes(label, left, right, ctx)),
         }
     }
 
@@ -1812,15 +1631,22 @@ impl DiffEngine {
             }
             (node, local)
         };
-        let results: Vec<(Result<DiffNode>, Ctx)> = if self.options.jobs == 1 {
-            keys.iter().map(process).collect()
-        } else {
-            keys.par_iter().map(process).collect()
-        };
-        let mut entries = Vec::with_capacity(results.len());
-        for (result, local) in results {
-            ctx.merge(local);
-            entries.push(result?);
+        // Bounded scheduler: aggregate finished entries chunk by chunk instead
+        // of collecting every result first, so only a bounded number of nodes
+        // and worker contexts is resident at any time. Chunks are processed in
+        // key order, keeping the report deterministic.
+        let chunk_size = self.options.jobs.max(1).saturating_mul(8).max(1);
+        let mut entries = Vec::with_capacity(keys.len());
+        for chunk in keys.chunks(chunk_size) {
+            let results: Vec<(Result<DiffNode>, Ctx)> = if self.options.jobs == 1 {
+                chunk.iter().map(process).collect()
+            } else {
+                chunk.par_iter().map(process).collect()
+            };
+            for (result, local) in results {
+                ctx.merge(local);
+                entries.push(result?);
+            }
         }
         Ok(EntryComparison {
             entries,
@@ -3320,6 +3146,521 @@ impl DiffEngine {
         }
         Some(key)
     }
+}
+
+/// One parsed comparison: everything a format parser needs to compare two
+/// sides whose bytes are already materialized.
+struct CompareArgs<'a> {
+    pub label: &'a str,
+    pub hint: &'a str,
+    pub left: &'a [u8],
+    pub right: &'a [u8],
+    pub left_kind: FileKind,
+    pub right_kind: FileKind,
+    pub kind: FileKind,
+    pub depth: usize,
+}
+
+/// A format parser registered with the engine's dispatcher.
+///
+/// Each parser handles one or more `FileKind`s. Adding a format means
+/// implementing this trait and registering the parser in `parser_registry`;
+/// the dispatcher, the depth handling and the shared resource accounting
+/// (`Ctx::charge_expanded`, `Ctx::omit`) stay untouched.
+trait FormatParser: Sync + Send {
+    /// The file kinds dispatched to this parser.
+    fn kinds(&self) -> &'static [FileKind];
+
+    /// Parser name, used by tests to pin the dispatch table.
+    #[allow(dead_code)]
+    fn name(&self) -> &'static str;
+
+    /// Compares the two sides. Implementations must charge any data they
+    /// unpack through `ctx.charge_expanded` and record skipped entries through
+    /// `ctx.omit`, so the shared resource budget and the completeness model
+    /// stay accurate.
+    fn compare_bytes(
+        &self,
+        engine: &DiffEngine,
+        args: CompareArgs<'_>,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode>;
+}
+
+struct TextParser;
+
+impl FormatParser for TextParser {
+    fn kinds(&self) -> &'static [FileKind] {
+        &[FileKind::Text]
+    }
+
+    fn name(&self) -> &'static str {
+        "text"
+    }
+
+    fn compare_bytes(
+        &self,
+        engine: &DiffEngine,
+        args: CompareArgs<'_>,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode> {
+        let (label, hint) = (args.label, args.hint);
+        let has_syntax = tokens::language_for_name(hint).is_some();
+        if has_syntax
+            && matches!(engine.options.mode, DiffMode::Tree | DiffMode::Graph)
+            && let Some(node) = engine.compare_tree_bytes(label, hint, args.left, args.right, ctx)
+        {
+            return Ok(node);
+        }
+        let token_mode = engine.options.mode == DiffMode::Token
+            || (engine.options.mode == DiffMode::Text
+                && engine.options.ignore_comments
+                && has_syntax);
+        if token_mode
+            && let Some(node) = engine.compare_token_bytes(label, hint, args.left, args.right, ctx)
+        {
+            return Ok(node);
+        }
+        if engine.options.ignore_comments && !has_syntax {
+            ctx.warn(format!(
+                "{}: --ignore-comments is only supported for known source languages; using text diff",
+                display_label(label)
+            ));
+        } else if engine.options.mode != DiffMode::Text && !has_syntax {
+            ctx.warn(format!(
+                "{}: no tree-sitter parser for this file type; using text diff",
+                display_label(label)
+            ));
+        }
+        Ok(engine.compare_text_bytes(label, args.left, args.right, "text", FileKind::Text, ctx))
+    }
+}
+
+struct StructuredParser;
+
+impl FormatParser for StructuredParser {
+    fn kinds(&self) -> &'static [FileKind] {
+        &[
+            FileKind::Json,
+            FileKind::Yaml,
+            FileKind::Toml,
+            FileKind::Ini,
+            FileKind::Xml,
+            FileKind::Html,
+            FileKind::Plist,
+            FileKind::Pickle,
+            FileKind::Mo,
+            FileKind::Wasm,
+            FileKind::JavaClass,
+            FileKind::AndroidXml,
+            FileKind::GitIndex,
+            FileKind::Ico,
+            FileKind::SshPublicKey,
+            FileKind::Structured,
+            FileKind::Cbor,
+            FileKind::MessagePack,
+            FileKind::Protobuf,
+            FileKind::Parquet,
+            FileKind::Avro,
+            FileKind::Orc,
+            FileKind::Rtf,
+            FileKind::Eml,
+            FileKind::Odt,
+            FileKind::Odp,
+            FileKind::Epub,
+            FileKind::Squashfs,
+            FileKind::Snap,
+            FileKind::AppImage,
+            FileKind::Flatpak,
+            FileKind::Dmg,
+            FileKind::Msix,
+            FileKind::Aab,
+            FileKind::Ext4,
+        ]
+    }
+
+    fn name(&self) -> &'static str {
+        "structured"
+    }
+
+    fn compare_bytes(
+        &self,
+        engine: &DiffEngine,
+        args: CompareArgs<'_>,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode> {
+        Ok(engine.compare_structured_bytes(
+            args.label,
+            args.hint,
+            args.left,
+            args.right,
+            args.left_kind,
+            args.right_kind,
+            ctx,
+        ))
+    }
+}
+
+/// One parser per leaf format whose comparison is a single call.
+macro_rules! leaf_parser {
+    ($struct_name:ident, $kind:ident, $parser_name:literal, $call:ident) => {
+        struct $struct_name;
+
+        impl FormatParser for $struct_name {
+            fn kinds(&self) -> &'static [FileKind] {
+                &[FileKind::$kind]
+            }
+
+            fn name(&self) -> &'static str {
+                $parser_name
+            }
+
+            fn compare_bytes(
+                &self,
+                engine: &DiffEngine,
+                args: CompareArgs<'_>,
+                ctx: &mut Ctx,
+            ) -> Result<DiffNode> {
+                Ok(engine.$call(args.label, args.left, args.right, ctx))
+            }
+        }
+    };
+}
+
+leaf_parser!(NotebookParser, Notebook, "notebook", compare_notebook_bytes);
+leaf_parser!(SqliteParser, Sqlite, "sqlite", compare_sqlite_bytes);
+leaf_parser!(
+    ExecutableParser,
+    Executable,
+    "executable",
+    compare_executable_bytes
+);
+leaf_parser!(DexParser, Dex, "dex", compare_dex_bytes);
+leaf_parser!(FontParser, Font, "font", compare_font_bytes);
+leaf_parser!(ImageParser, Image, "image", compare_image_bytes);
+
+struct TableParser;
+
+impl FormatParser for TableParser {
+    fn kinds(&self) -> &'static [FileKind] {
+        &[FileKind::Csv]
+    }
+
+    fn name(&self) -> &'static str {
+        "table"
+    }
+
+    fn compare_bytes(
+        &self,
+        engine: &DiffEngine,
+        args: CompareArgs<'_>,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode> {
+        Ok(engine.compare_table_bytes(args.label, args.left, args.right, args.hint, ctx))
+    }
+}
+
+struct DocumentParser;
+
+impl FormatParser for DocumentParser {
+    fn kinds(&self) -> &'static [FileKind] {
+        &[FileKind::Pdf, FileKind::Ofd, FileKind::Docx, FileKind::Pptx]
+    }
+
+    fn name(&self) -> &'static str {
+        "document"
+    }
+
+    fn compare_bytes(
+        &self,
+        engine: &DiffEngine,
+        args: CompareArgs<'_>,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode> {
+        Ok(engine.compare_document_bytes(args.label, args.left, args.right, args.kind, ctx))
+    }
+}
+
+struct WorkbookParser;
+
+impl FormatParser for WorkbookParser {
+    fn kinds(&self) -> &'static [FileKind] {
+        &[FileKind::Xlsx]
+    }
+
+    fn name(&self) -> &'static str {
+        "workbook"
+    }
+
+    fn compare_bytes(
+        &self,
+        engine: &DiffEngine,
+        args: CompareArgs<'_>,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode> {
+        Ok(engine.compare_workbook_bytes(args.label, args.left, args.right, args.hint, ctx))
+    }
+}
+
+/// Nested compressed streams: unpack both sides (charging the budget) and
+/// recurse one level deeper with the restored file name hint.
+struct CompressionParser;
+
+impl FormatParser for CompressionParser {
+    fn kinds(&self) -> &'static [FileKind] {
+        &[
+            FileKind::Gzip,
+            FileKind::Zstd,
+            FileKind::Bzip2,
+            FileKind::Xz,
+            FileKind::Lz4,
+        ]
+    }
+
+    fn name(&self) -> &'static str {
+        "compression"
+    }
+
+    fn compare_bytes(
+        &self,
+        engine: &DiffEngine,
+        args: CompareArgs<'_>,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode> {
+        if !can_expand(args.depth, engine.options.max_depth) {
+            return Ok(depth_limit_node(
+                args.label,
+                &format!("nested {} depth limit reached", args.kind.label()),
+            ));
+        }
+        let (left_inner, right_inner) = match args.kind {
+            FileKind::Gzip => (
+                engine.decompress_gzip(args.left, args.label, ctx),
+                engine.decompress_gzip(args.right, args.label, ctx),
+            ),
+            FileKind::Zstd => (
+                engine.decompress_zstd(args.left, args.label, ctx),
+                engine.decompress_zstd(args.right, args.label, ctx),
+            ),
+            FileKind::Bzip2 => (
+                engine.decompress_bzip2(args.left, args.label, ctx),
+                engine.decompress_bzip2(args.right, args.label, ctx),
+            ),
+            FileKind::Xz => (
+                engine.decompress_xz(args.left, args.label, ctx),
+                engine.decompress_xz(args.right, args.label, ctx),
+            ),
+            FileKind::Lz4 => (
+                engine.decompress_lz4(args.left, args.label, ctx),
+                engine.decompress_lz4(args.right, args.label, ctx),
+            ),
+            _ => unreachable!(),
+        };
+        let Some(left_inner) = left_inner else {
+            return Ok(engine.compare_binary_bytes(args.label, args.left, args.right, ctx));
+        };
+        let Some(right_inner) = right_inner else {
+            return Ok(engine.compare_binary_bytes(args.label, args.left, args.right, ctx));
+        };
+        let inner_hint = strip_compression_suffix(args.kind, args.hint);
+        let left_kind = detect_bytes(inner_hint, &left_inner);
+        let right_kind = detect_bytes(inner_hint, &right_inner);
+        engine.compare_bytes_internal(
+            args.label,
+            inner_hint,
+            &left_inner,
+            &right_inner,
+            left_kind,
+            right_kind,
+            args.depth + 1,
+            ctx,
+        )
+    }
+}
+
+/// Restores the pre-decompression hint so nested detection sees the original
+/// file name (`.log.gz` -> `.log`; an `.ipk` payload unpacks a `package.tar`).
+fn strip_compression_suffix(kind: FileKind, hint: &str) -> &str {
+    if kind == FileKind::Gzip && hint.to_ascii_lowercase().ends_with(".ipk") {
+        return "package.tar";
+    }
+    match kind {
+        FileKind::Gzip => hint.strip_suffix(".gz").unwrap_or(hint),
+        FileKind::Zstd => hint.strip_suffix(".zst").unwrap_or(hint),
+        FileKind::Bzip2 => hint.strip_suffix(".bz2").unwrap_or(hint),
+        FileKind::Xz => hint.strip_suffix(".xz").unwrap_or(hint),
+        FileKind::Lz4 => hint.strip_suffix(".lz4").unwrap_or(hint),
+        _ => hint,
+    }
+}
+
+/// Nested archives: enforce the depth gate, run the format's bounded reader
+/// and fall back to a binary comparison when the archive cannot be read.
+struct ArchiveParser;
+
+impl FormatParser for ArchiveParser {
+    fn kinds(&self) -> &'static [FileKind] {
+        &[
+            FileKind::Zip,
+            FileKind::SevenZip,
+            FileKind::Tar,
+            FileKind::Deb,
+            FileKind::Rpm,
+            FileKind::Iso,
+            FileKind::Cpio,
+            FileKind::Cab,
+            FileKind::Xar,
+            FileKind::Ar,
+        ]
+    }
+
+    fn name(&self) -> &'static str {
+        "archive"
+    }
+
+    fn compare_bytes(
+        &self,
+        engine: &DiffEngine,
+        args: CompareArgs<'_>,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode> {
+        if !can_expand(args.depth, engine.options.max_depth) {
+            return Ok(depth_limit_node(
+                args.label,
+                "nested archive depth limit reached",
+            ));
+        }
+        let omitted_before = ctx.omitted;
+        let result = match args.kind {
+            FileKind::Zip => {
+                engine.compare_zip_bytes(args.label, args.left, args.right, args.depth, ctx)
+            }
+            FileKind::SevenZip => {
+                engine.compare_7z_bytes(args.label, args.left, args.right, args.depth, ctx)
+            }
+            FileKind::Tar => {
+                engine.compare_tar_bytes(args.label, args.left, args.right, args.depth, ctx)
+            }
+            FileKind::Deb => {
+                engine.compare_deb_bytes(args.label, args.left, args.right, args.depth, ctx)
+            }
+            FileKind::Rpm => {
+                engine.compare_rpm_bytes(args.label, args.left, args.right, args.depth, ctx)
+            }
+            FileKind::Iso => {
+                engine.compare_iso_bytes(args.label, args.left, args.right, args.depth, ctx)
+            }
+            FileKind::Cpio => {
+                engine.compare_cpio_bytes(args.label, args.left, args.right, args.depth, ctx)
+            }
+            FileKind::Cab => {
+                engine.compare_cab_bytes(args.label, args.left, args.right, args.depth, ctx)
+            }
+            FileKind::Xar => {
+                engine.compare_xar_bytes(args.label, args.left, args.right, args.depth, ctx)
+            }
+            FileKind::Ar => {
+                engine.compare_ar_bytes(args.label, args.left, args.right, args.depth, ctx)
+            }
+            _ => unreachable!(),
+        };
+        let node = match result {
+            Ok(node) => node,
+            Err(err) => {
+                ctx.warn(format!(
+                    "{}: could not read archive ({err}); falling back to binary",
+                    display_label(args.label)
+                ));
+                engine.compare_binary_bytes(args.label, args.left, args.right, ctx)
+            }
+        };
+        // Readers bump `omitted` when a per-entry limit or the resource budget
+        // made them skip an entry; the archive is then only partially compared
+        // even if every kept entry is equal.
+        Ok(complete_unless(node, ctx.omitted > omitted_before))
+    }
+}
+
+/// Everything without a semantic parser: byte comparison, plus the legacy
+/// Office warning for the one kind that never had a reader.
+struct BinaryParser;
+
+impl FormatParser for BinaryParser {
+    fn kinds(&self) -> &'static [FileKind] {
+        &[
+            FileKind::Office,
+            FileKind::Audio,
+            FileKind::Binary,
+            FileKind::Unknown,
+            FileKind::Directory,
+        ]
+    }
+
+    fn name(&self) -> &'static str {
+        "binary"
+    }
+
+    fn compare_bytes(
+        &self,
+        engine: &DiffEngine,
+        args: CompareArgs<'_>,
+        ctx: &mut Ctx,
+    ) -> Result<DiffNode> {
+        if args.kind == FileKind::Office {
+            ctx.warn(format!(
+                "{}: legacy Office format diff is not implemented; falling back to binary",
+                display_label(args.label)
+            ));
+        }
+        Ok(engine.compare_binary_bytes(args.label, args.left, args.right, ctx))
+    }
+}
+
+static TEXT_PARSER: TextParser = TextParser;
+static STRUCTURED_PARSER: StructuredParser = StructuredParser;
+static NOTEBOOK_PARSER: NotebookParser = NotebookParser;
+static SQLITE_PARSER: SqliteParser = SqliteParser;
+static EXECUTABLE_PARSER: ExecutableParser = ExecutableParser;
+static DEX_PARSER: DexParser = DexParser;
+static FONT_PARSER: FontParser = FontParser;
+static TABLE_PARSER: TableParser = TableParser;
+static IMAGE_PARSER: ImageParser = ImageParser;
+static COMPRESSION_PARSER: CompressionParser = CompressionParser;
+static ARCHIVE_PARSER: ArchiveParser = ArchiveParser;
+static DOCUMENT_PARSER: DocumentParser = DocumentParser;
+static WORKBOOK_PARSER: WorkbookParser = WorkbookParser;
+static BINARY_PARSER: BinaryParser = BinaryParser;
+
+/// The engine's parser registry: one entry per format parser, consulted by
+/// `compare_bytes_internal` for every comparison. Parsers are found by their
+/// declared `kinds`, so new formats plug in without touching the dispatcher.
+fn parser_registry() -> &'static [&'static dyn FormatParser] {
+    static REGISTRY: OnceLock<Vec<&'static dyn FormatParser>> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        vec![
+            &TEXT_PARSER,
+            &STRUCTURED_PARSER,
+            &NOTEBOOK_PARSER,
+            &SQLITE_PARSER,
+            &EXECUTABLE_PARSER,
+            &DEX_PARSER,
+            &FONT_PARSER,
+            &TABLE_PARSER,
+            &IMAGE_PARSER,
+            &COMPRESSION_PARSER,
+            &ARCHIVE_PARSER,
+            &DOCUMENT_PARSER,
+            &WORKBOOK_PARSER,
+            &BINARY_PARSER,
+        ]
+    })
+}
+
+fn parser_for(kind: FileKind) -> Option<&'static dyn FormatParser> {
+    parser_registry()
+        .iter()
+        .copied()
+        .find(|parser| parser.kinds().contains(&kind))
 }
 
 #[derive(Default)]

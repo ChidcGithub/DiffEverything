@@ -95,16 +95,16 @@ Integration tests are consolidated under one `tests/integration.rs` target; the 
 ```text
 cargo test --workspace
 12 CLI binary unit tests
-75 CLI tests
-152 diff-core unit tests (including `tests/unit/engine.rs` for the private archive readers)
-112 diff-core integration tests (one linked target: engine 7, extended formats 21,
-    formats 58, robustness 21, folder merge 3, folder patch 2)
-= 351 tests, all passing
+76 CLI tests
+155 diff-core unit tests (including `tests/unit/engine.rs` for the private archive readers)
+113 diff-core integration tests (one linked target: engine 7, extended formats 21,
+    formats 58, robustness 22, folder merge 3, folder patch 2)
+= 356 tests, all passing
 ```
 
 ```text
 cargo test --workspace --release
-(351 tests, all passing)
+(356 tests, all passing)
 ```
 
 ```text

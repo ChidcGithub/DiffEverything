@@ -234,7 +234,8 @@ Repository: https://github.com/ChidcGithub/DiffEverything
 | `--max-file-bytes <BYTES>` / `--no-file-size-limit` | Override or remove the 64 MiB per-file detailed-diff limit; removing it may exhaust memory |
 | `--max-entries <N>` / `--no-entry-limit` | Directory/archive entry limit, or remove it entirely |
 | `--max-expanded-bytes <BYTES>` | Total unpacked bytes (archive entries and decompressed streams, every nesting level, both sides) one comparison may materialize; default 1 GiB |
-| `--no-limits` | Remove all analysis limits: file size, expanded bytes, entries, rows, cells, depth and PDF pages |
+| `--max-inflight-bytes <BYTES>` | Maximum bytes of file contents held in flight at the same time by the parallel workers; default 256 MiB, `0` disables |
+| `--no-limits` | Remove all analysis limits: file size, expanded bytes, in-flight bytes, entries, rows, cells, depth and PDF pages |
 | `--max-depth <N>` | Container nesting limit counted from the input root, for directories, archives and compressed streams; default 32 (1..1024) |
 | **Merge and sync** | |
 | `--base <FILE\|DIR>` | Three-way merge base (a directory base enables directory merge) |
@@ -300,7 +301,7 @@ Twenty reference repositories were reviewed in total. Licenses and detailed mapp
 ## Testing
 
 ```powershell
-# 351 Rust tests (unit + integration + CLI)
+# 356 Rust tests (unit + integration + CLI)
 cargo test --workspace
 
 # Strict lint
@@ -362,6 +363,8 @@ elapsed  7 ms
 - `crates/diff-core/tests/integration.rs` is the single integration-test target; the six case modules are included from `tests/cases/` and no longer produce six separate link steps.
 - Unit tests live outside `src/` in `tests/unit/<source path>.rs`; each source file mounts them with `#[cfg(test)] #[path]`, keeping private access without test code in the source files.
 - Every comparison carries a shared `ResourceBudget`: archive readers and decompressors charge the bytes they unpack atomically, so rayon workers cannot race past the cap, and the budget latches when spent. Containers that omitted entries (archive entry caps, directory scan stop, depth limit, budget exhaustion) propagate a `ComparisonCompleteness` of `Truncated` up the `DiffNode` tree into `DiffReport.completeness`; the CLI then exits `3` instead of `0` when nothing differed but the input was not fully compared.
+- The scheduler bounds the parallel work set instead of only the thread count: every file task acquires its footprint (left + right size) from an in-flight gate (`--max-inflight-bytes`, default 256 MiB) before its contents are read and releases it when the node is built, so more workers means more small tasks in flight, never more bytes; a task larger than the budget is clamped and runs alone. Finished entry results are aggregated chunk by chunk instead of being collected whole first.
+- Format comparison is dispatched through a parser registry: every `FileKind` maps to a `FormatParser` (text, structured, notebook, sqlite, executable, dex, font, table, image, compression, archive, document, workbook, binary). Parsers charge unpacked bytes through the shared context, so a new format plugs in without touching the dispatcher or the resource model.
 - The embedded Windows aria2 executable is stored zstd-compressed in the binary (2.07 MiB instead of 5.65 MiB) and decompressed to the temporary directory on first use. Raw binary SHA-256 is recorded in `THIRD_PARTY_LICENSES.md`.
 - Directory and archive entry comparison shares one `Arc<GlobSet>` instead of cloning the matcher per entry, merges sorted key sets linearly, avoids a per-entry result-key clone, and skips progress-message formatting when progress is disabled.
 - Every archive reader reads entries through one shared bounded read (`limit + 1` bytes), including CAB; XAR validates its declared table-of-contents size before allocating and bounds TOC and payload decoding; ZIP LZMA bounds the compressed stream as well as its output. `--max-depth` counts container levels from the input root: leaves compare at `depth <= max_depth`, containers expand only below it, and a directory at the limit is reported as one `directory depth limit reached` node instead of being scanned.

@@ -315,6 +315,45 @@ fn max_depth_limits_nested_archives_and_validates_zero() {
 }
 
 #[test]
+fn inflight_budget_is_configurable_and_disablable() {
+    // Identical text files compare equal under a tiny gate, with the gate
+    // disabled, and with --no-limits (which disables it implicitly).
+    let tiny = run_str(&[
+        fixture("text/old.txt").to_str().unwrap(),
+        fixture("text/old.txt").to_str().unwrap(),
+        "--max-inflight-bytes",
+        "1024",
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_eq!(tiny.status.code(), Some(0), "{}", stderr(&tiny));
+
+    let disabled = run_str(&[
+        fixture("text/old.txt").to_str().unwrap(),
+        fixture("text/old.txt").to_str().unwrap(),
+        "--max-inflight-bytes",
+        "0",
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_eq!(disabled.status.code(), Some(0), "{}", stderr(&disabled));
+
+    let conflict = run_str(&[
+        fixture("text/old.txt").to_str().unwrap(),
+        fixture("text/old.txt").to_str().unwrap(),
+        "--no-limits",
+        "--max-inflight-bytes",
+        "1024",
+    ]);
+    assert_eq!(conflict.status.code(), Some(2), "{}", stderr(&conflict));
+    assert!(
+        stderr(&conflict).contains("cannot be used with"),
+        "{}",
+        stderr(&conflict)
+    );
+}
+
+#[test]
 fn exit_code_3_when_equal_but_truncated() {
     let dir = tempfile::tempdir().unwrap();
     let left = dir.path().join("left");

@@ -452,6 +452,40 @@ fn expanded_bytes_budget_limits_nested_archives() {
 }
 
 #[test]
+fn inflight_gate_serializes_large_files_without_changing_results() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left");
+    let right = dir.path().join("right");
+    let payload = vec![0x51u8; 2 * 1024 * 1024];
+    for root in [&left, &right] {
+        fs::create_dir_all(root).unwrap();
+        for index in 0..4 {
+            fs::write(root.join(format!("big{index}.bin")), &payload).unwrap();
+        }
+    }
+
+    // Each pair has a 4 MiB footprint against a 3 MiB in-flight budget, so
+    // the scheduler clamps and serializes the large comparisons; the result
+    // must be identical to an ungated run.
+    let gated = DiffEngine::new(DiffOptions {
+        max_inflight_bytes: 3 * 1024 * 1024,
+        ..DiffOptions::default()
+    })
+    .compare(&left, &right)
+    .unwrap();
+    assert_eq!(gated.status, DiffStatus::Equal);
+    assert_eq!(gated.completeness, ComparisonCompleteness::Complete);
+
+    let ungated = DiffEngine::new(DiffOptions {
+        max_inflight_bytes: 0,
+        ..DiffOptions::default()
+    })
+    .compare(&left, &right)
+    .unwrap();
+    assert_eq!(ungated.status, DiffStatus::Equal);
+}
+
+#[test]
 fn directory_at_the_depth_limit_is_reported_not_skipped() {
     let dir = tempdir().unwrap();
     let left = dir.path().join("left");

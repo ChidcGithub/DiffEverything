@@ -183,3 +183,79 @@ fn cab_reader_stops_when_the_expanded_budget_is_spent() {
         ctx.warnings
     );
 }
+
+#[test]
+fn parser_registry_dispatches_by_kind_and_has_no_duplicates() {
+    let mut seen: Vec<(FileKind, &'static str)> = Vec::new();
+    for parser in parser_registry() {
+        for kind in parser.kinds() {
+            assert!(
+                seen.iter().all(|(seen_kind, _)| seen_kind != kind),
+                "{} is registered by two parsers",
+                kind.label()
+            );
+            seen.push((*kind, parser.name()));
+        }
+    }
+    assert_eq!(parser_for(FileKind::Text).unwrap().name(), "text");
+    assert_eq!(parser_for(FileKind::Json).unwrap().name(), "structured");
+    assert_eq!(parser_for(FileKind::Zip).unwrap().name(), "archive");
+    assert_eq!(parser_for(FileKind::Gzip).unwrap().name(), "compression");
+    assert_eq!(parser_for(FileKind::Csv).unwrap().name(), "table");
+    assert_eq!(parser_for(FileKind::Xlsx).unwrap().name(), "workbook");
+    assert_eq!(parser_for(FileKind::Pdf).unwrap().name(), "document");
+    assert_eq!(parser_for(FileKind::Notebook).unwrap().name(), "notebook");
+    assert_eq!(parser_for(FileKind::Dex).unwrap().name(), "dex");
+    assert_eq!(parser_for(FileKind::Binary).unwrap().name(), "binary");
+    // Kinds without a dedicated parser fall back to binary in the dispatcher.
+    assert!(parser_for(FileKind::Video).is_none());
+    assert!(parser_for(FileKind::GitHistory).is_none());
+}
+
+#[test]
+fn inflight_gate_accounts_and_releases_footprints() {
+    let gate = InflightGate::new(100);
+    let first = gate.acquire(60);
+    assert_eq!(first.footprint, 60);
+    let second = gate.acquire(40);
+    assert_eq!(second.footprint, 40);
+    // Releasing frees the whole budget for the next task.
+    drop(first);
+    drop(second);
+    let third = gate.acquire(100);
+    assert_eq!(third.footprint, 100);
+    drop(third);
+    // A single task larger than the budget is clamped instead of deadlocking.
+    let clamped = gate.acquire(500);
+    assert_eq!(clamped.footprint, 100);
+    drop(clamped);
+    // A disabled gate accounts nothing.
+    let disabled = InflightGate::new(0);
+    let free = disabled.acquire(1_000);
+    assert_eq!(free.footprint, 0);
+}
+
+#[test]
+fn inflight_gate_blocks_until_a_permit_is_released() {
+    let gate = Arc::new(InflightGate::new(100));
+    let held = gate.acquire(80);
+
+    let entered = Arc::new(AtomicBool::new(false));
+    let waiter_entered = entered.clone();
+    let waiter_gate = gate.clone();
+    let waiter = std::thread::spawn(move || {
+        waiter_entered.store(true, Ordering::Relaxed);
+        let permit = waiter_gate.acquire(30);
+        permit.footprint
+    });
+
+    while !entered.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // The waiter fits only while the first permit is held; give it a moment to
+    // prove it is parked, then release and let it through.
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    assert!(!waiter.is_finished());
+    drop(held);
+    assert_eq!(waiter.join().unwrap(), 30);
+}
