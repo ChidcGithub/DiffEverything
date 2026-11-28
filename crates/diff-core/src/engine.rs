@@ -3089,8 +3089,12 @@ impl DiffEngine {
 
     fn collect_files(&self, root: &Path, ctx: &mut Ctx) -> Result<WalkedFiles> {
         let mut walked = WalkedFiles::default();
+        // The walk is sorted so that a scan stopped at the entry limit picks
+        // the same entries on every platform and every run; without the sort
+        // the selection would follow the filesystem's readdir order.
         let walker = walkdir::WalkDir::new(root)
             .follow_links(false)
+            .sort_by_file_name()
             .max_depth(self.options.max_depth);
 
         for entry in walker {
