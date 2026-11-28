@@ -129,12 +129,5 @@ pub fn strip_ansi(input: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn strips_sgr_sequences() {
-        assert_eq!(strip_ansi("\x1b[31mred\x1b[0m plain"), "red plain");
-        assert_eq!(strip_ansi("no color"), "no color");
-    }
-}
+#[path = "../tests/unit/tui.rs"]
+mod tests;

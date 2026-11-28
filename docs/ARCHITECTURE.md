@@ -40,7 +40,10 @@ crates/
 │  │  ├─ markdown.rs         Markdown report
 │  │  ├─ html.rs             self-contained HTML report
 │  │  └─ unified.rs          GNU unified diff
-│  └─ tests/                 engine / formats / robustness
+│  └─ tests/
+│     ├─ integration.rs      single integration-test target
+│     ├─ cases/              engine / formats / robustness / merge / patch cases
+│     └─ unit/               unit tests mounted by each source module via #[path]
 └─ diff-cli/
    ├─ src/main.rs            argument parsing, exit codes, merge/patch/image branches
    ├─ src/error_report.rs    structured runtime errors, IO translation and hints
@@ -48,7 +51,8 @@ crates/
    ├─ src/remote.rs          WebDAV / SFTP / SMB remote inputs
    ├─ src/support.rs         supported-format and per-format capability catalog
    ├─ src/tui.rs             interactive ANSI viewer
-   └─ tests/cli.rs           CLI end-to-end tests
+   ├─ tests/cli.rs           CLI end-to-end tests
+   └─ tests/unit/            unit tests mounted by each source module via #[path]
 ```
 
 ## Data Flow
@@ -265,5 +269,6 @@ For a new leaf format (for example OCR text), reuse `TextDiff` / `StructuredDiff
 - `--no-entry-limit` sets directory and archive entry limits to `usize::MAX`. `--no-limits` additionally removes row, hunk, structured-change, table, workbook, depth and PDF page limits; the individual limit flags conflict with it. These options intentionally trade memory/runtime for completeness.
 - `cargo build --release` uses `opt-level = 3`, no LTO, 16 codegen units and symbol stripping for fast iteration. The `dist` profile (`cargo build --profile dist`) enables fat LTO and one codegen unit for shipping. The embedded Windows aria2 binary is zstd-compressed and decompressed on first use.
 - Integration tests use one target (`tests/integration.rs`) with the six case modules under `tests/cases/`; this avoids six independent links of the full dependency graph.
+- Unit tests live outside the source tree in `tests/unit/<source path>.rs` (for example `tests/unit/diff/text.rs` for `src/diff/text.rs`). Each source file mounts its tests with `#[cfg(test)] #[path = "..."] mod tests;`, so they keep private access while `src/` contains no test code.
 - Directory/archive workers share an `Arc<GlobSet>` exclusion matcher, merge sorted keys in linear time, and avoid per-entry key clones and progress formatting when progress is disabled.
 - Both workspace crates forbid `unsafe` code. ANSI output sanitizes untrusted control characters, the TUI has an RAII terminal cleanup guard, and Kaspersky report reads are capped at 4 MiB.

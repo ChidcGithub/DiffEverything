@@ -162,16 +162,5 @@ fn column_name(mut column: u32) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn column_names_are_spreadsheet_style() {
-        assert_eq!(column_name(0), "A");
-        assert_eq!(column_name(25), "Z");
-        assert_eq!(column_name(26), "AA");
-        assert_eq!(column_name(27), "AB");
-        assert_eq!(column_name(701), "ZZ");
-        assert_eq!(column_name(702), "AAA");
-    }
-}
+#[path = "../../tests/unit/diff/workbook.rs"]
+mod tests;
