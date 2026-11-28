@@ -102,6 +102,11 @@ impl ResourceBudget {
 
     /// Charges `bytes` of unpacked data; `false` means the budget is spent and
     /// the caller must stop materializing more data.
+    ///
+    /// The newest toolchains deprecate `fetch_update` in favour of a renamed
+    /// `try_update`, which does not exist on the versions this crate compiles
+    /// against, so the deprecation lint is silenced here.
+    #[allow(deprecated)]
     pub fn charge(&self, bytes: u64) -> bool {
         if self.is_exhausted() {
             return false;
