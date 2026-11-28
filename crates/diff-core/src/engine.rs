@@ -3116,14 +3116,16 @@ impl DiffEngine {
                         continue;
                     }
                     if let Some(key) = self.relative_key(entry.path(), root, ctx) {
-                        walked.files.insert(key, entry.path().to_path_buf());
-                        // The scan shares the comparison's entry budget: once
-                        // the limit is reached, stop walking instead of
-                        // enumerating a tree that cannot be compared anyway.
+                        // Check before inserting: a tree with exactly
+                        // `max_dir_entries` files is complete, so the scan may
+                        // only report truncation after seeing one more
+                        // comparable file. The walk still stops at that file
+                        // instead of enumerating the rest.
                         if walked.files.len() >= self.options.max_dir_entries {
                             walked.scan_truncated = true;
                             break;
                         }
+                        walked.files.insert(key, entry.path().to_path_buf());
                     }
                 }
                 Err(err) => ctx.warn(format!("{}: directory walk error: {err}", root.display())),

@@ -1841,6 +1841,32 @@ fn entry_limits_can_be_removed_for_directories_and_archives() {
 }
 
 #[test]
+fn exact_entry_limit_is_not_reported_as_truncated() {
+    let dir = tempfile::tempdir().unwrap();
+    let left = dir.path().join("left");
+    let right = dir.path().join("right");
+    for root in [&left, &right] {
+        std::fs::create_dir_all(root).unwrap();
+        for index in 0..2 {
+            std::fs::write(root.join(format!("file{index}.txt")), "same\n").unwrap();
+        }
+    }
+
+    let output = run_str(&[
+        left.to_str().unwrap(),
+        right.to_str().unwrap(),
+        "--max-entries",
+        "2",
+        "--no-color",
+        "--no-progress",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(!text.contains("directory entry limit"), "{text}");
+    assert!(!text.contains("TRUNCATED"), "{text}");
+}
+
+#[test]
 fn packed_executables_require_legal_confirmation() {
     let source = std::fs::read(fixture("executable/diffoscope-test1.exe")).unwrap();
     let dir = tempfile::tempdir().unwrap();

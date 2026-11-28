@@ -419,6 +419,41 @@ fn directory_scan_stops_at_the_entry_limit_and_stays_indeterminate() {
 }
 
 #[test]
+fn directory_scan_at_the_exact_entry_limit_is_complete() {
+    let dir = tempdir().unwrap();
+    let left = dir.path().join("left");
+    let right = dir.path().join("right");
+    for root in [&left, &right] {
+        fs::create_dir_all(root).unwrap();
+        for index in 0..3 {
+            fs::write(root.join(format!("file{index}.txt")), "same\n").unwrap();
+        }
+    }
+
+    let options = DiffOptions {
+        max_dir_entries: 3,
+        ..DiffOptions::default()
+    };
+    let report = DiffEngine::new(options).compare(&left, &right).unwrap();
+    assert_eq!(report.status, DiffStatus::Equal);
+    // The tree has exactly as many files as the limit allows, so nothing was
+    // omitted and the equal verdict covers the whole comparison.
+    assert_eq!(report.completeness, ComparisonCompleteness::Complete);
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("directory entry limit")),
+        "{:?}",
+        report.warnings
+    );
+    let DiffBody::Directory(directory) = &report.root.body else {
+        panic!("expected a directory report");
+    };
+    assert_eq!(directory.entries.len(), 3);
+}
+
+#[test]
 fn expanded_bytes_budget_limits_nested_archives() {
     let dir = tempdir().unwrap();
     // The inner archives differ, so the outer files are not byte-identical and
